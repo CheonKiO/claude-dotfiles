@@ -40,6 +40,10 @@ When your changes create orphans:
 - Remove imports/variables/functions that YOUR changes made unused.
 - Don't remove pre-existing dead code unless asked.
 
+When writing to a path that already has content (a doc, a report, notes):
+- Default to append, not overwrite, unless the user explicitly asked for a fresh rewrite/replacement.
+- Read it first regardless — a bare shell `mv`/`cp` over an existing path skips that check and has destroyed unrecoverable notes before.
+
 The test: Every changed line should trace directly to the user's request.
 
 ## 4. Goal-Driven Execution
