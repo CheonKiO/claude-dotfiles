@@ -56,5 +56,5 @@ description: Use before writing code against an external API/vendor's documented
 
 ## 실패 사례 (교훈)
 
-- "문서를 민었다"에서 나온 사고: enum 순서 뒤집힘, 페이지네이션 부분수집, 가격 필드 타입 불일치.
+- "문서를 믿었다"에서 나온 사고: enum 순서 뒤집힘, 페이지네이션 부분수집, 가격 필드 타입 불일치.
 - 계획서에 실측 게이트를 명시했으면서도 실제로는 안 지키고 앞서나간 사례 — 게이트는 문서화가 아니라 강제되는 순서여야 한다.

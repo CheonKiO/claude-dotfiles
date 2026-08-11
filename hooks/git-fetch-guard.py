@@ -3,12 +3,14 @@
 so local origin/* refs aren't stale when reviewing branches/MRs."""
 import json
 import os
+import pathlib
 import subprocess
 import sys
+import tempfile
 import time
 
 THROTTLE_SECONDS = 30
-STATE_DIR = "/tmp/claude-git-fetch-guard"
+STATE_DIR = str(pathlib.Path(tempfile.gettempdir()) / "claude-git-fetch-guard")
 
 
 def main():
@@ -36,7 +38,8 @@ def main():
     repo_root = top.stdout.strip()
 
     os.makedirs(STATE_DIR, exist_ok=True)
-    state_file = os.path.join(STATE_DIR, repo_root.replace("/", "_") + ".ts")
+    safe_name = repo_root.replace("/", "_").replace("\\", "_").replace(":", "")
+    state_file = os.path.join(STATE_DIR, safe_name + ".ts")
     now = time.time()
     if os.path.exists(state_file):
         try:

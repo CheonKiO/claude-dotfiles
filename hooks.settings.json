@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/kio/.claude/hooks/file-size-guard.py",
+            "command": "python3 -c \"import pathlib; exec(open(str(pathlib.Path.home()/'.claude'/'hooks'/'file-size-guard.py')).read())\"",
             "timeout": 10
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/kio/.claude/hooks/git-fetch-guard.py",
+            "command": "python3 -c \"import pathlib; exec(open(str(pathlib.Path.home()/'.claude'/'hooks'/'git-fetch-guard.py')).read())\"",
             "timeout": 35
           }
         ]

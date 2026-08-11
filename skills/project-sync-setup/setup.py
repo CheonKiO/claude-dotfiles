@@ -41,7 +41,7 @@ REAL_END_REASONS = {"prompt_input_exit", "logout", "other"}
 
 def acquire_throttle():
     """Atomic check-and-set so concurrent SessionEnds (e.g. closing the IDE with
-    several tabs open) can't all pass the throttle at once."""
+    several tabs open) can\'t all pass the throttle at once."""
     now = time.time()
     try:
         fd = os.open(THROTTLE_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -105,7 +105,7 @@ if __name__ == "__main__":
 
 SESSION_START_TEMPLATE = '''#!/usr/bin/env python3
 """SessionStart hook (this project, fresh startup only): if the cloud folder has a sync
-archive newer than what this machine last imported, force it into Claude's first turn via
+archive newer than what this machine last imported, force it into Claude\'s first turn via
 initialUserMessage so it actually gets surfaced (additionalContext alone was too easy to
 silently skip) — never auto-imports."""
 import glob
