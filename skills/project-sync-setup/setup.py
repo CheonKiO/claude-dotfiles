@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Bootstrap the SessionEnd/SessionStart cloud-sync automation (built for ieumgil/S15P11A107)
 into a NEW project. Generates project-local hook scripts + registers them in that project's
-.claude/settings.local.json. Requires ~/claude-export.sh and ~/claude-import.sh to already
-exist (project-agnostic already, driven by REPO_ROOT/PROJECT_NAME env vars).
+.claude/settings.local.json. Requires ~/.claude/claude-export.py (+ claude-import.py) to exist
+— deploy them by running this repo's sync.py. The generated SessionEnd hook invokes the
+exporter with sys.executable and --repo/--project-name/--out-dir args (no bash, cross-platform).
 
 Usage:
   python3 setup.py --repo /path/to/project --cloud-dir "/mnt/c/Users/<winuser>/iCloudDrive" [--project-name myproj]
@@ -16,7 +17,17 @@ Creates:
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
+
+
+def detect_python():
+    """Interpreter invocation that exists on this OS: python3 -> python -> py -3.
+    Baked into the hook command string (which Claude Code runs verbatim)."""
+    for cand in (["python3"], ["python"], ["py", "-3"]):
+        if shutil.which(cand[0]):
+            return " ".join(cand)
+    return "python3"
 
 SESSION_END_TEMPLATE = '''#!/usr/bin/env python3
 """SessionEnd hook (this project only): auto-export Claude state to the cloud in the
@@ -31,8 +42,14 @@ import time
 REPO_ROOT = "__REPO_ROOT__"
 PROJECT_NAME = "__PROJECT_NAME__"
 CLOUD_DIR = "__CLOUD_DIR__"
-EXPORT_SCRIPT = os.path.expanduser("~/claude-export.sh")
+EXPORT_SCRIPT = os.path.expanduser("~/.claude/claude-export.py")
 LOG_FILE = os.path.expanduser(f"~/.claude-sync-{PROJECT_NAME}-export.log")
+
+
+def under_repo(cwd):
+    a = os.path.normcase(os.path.normpath(cwd))
+    b = os.path.normcase(os.path.normpath(REPO_ROOT))
+    return a == b or a.startswith(b + os.sep)
 THROTTLE_FILE = os.path.expanduser(f"~/.claude-sync-{PROJECT_NAME}-throttle")
 THROTTLE_SECONDS = 10  # only to collapse a simultaneous multi-tab close burst, not to skip real re-closes
 
@@ -80,7 +97,7 @@ def main():
     cwd = payload.get("cwd", "")
     reason = payload.get("reason", "")
 
-    if not cwd.startswith(REPO_ROOT):
+    if not under_repo(cwd):
         return
     if reason not in REAL_END_REASONS:
         return
@@ -90,12 +107,18 @@ def main():
         return
 
     with open(LOG_FILE, "a") as log:
+        kwargs = {"stdout": log, "stderr": log}
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        else:
+            kwargs["start_new_session"] = True
+        # sys.executable = the very interpreter running this hook -> guaranteed present.
         subprocess.Popen(
-            ["bash", EXPORT_SCRIPT, CLOUD_DIR],
-            env={**os.environ, "REPO_ROOT": REPO_ROOT, "PROJECT_NAME": PROJECT_NAME},
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
+            [sys.executable, EXPORT_SCRIPT,
+             "--repo", REPO_ROOT, "--project-name", PROJECT_NAME, "--out-dir", CLOUD_DIR],
+            **kwargs,
         )
 
 
@@ -122,6 +145,12 @@ MARKER_FILE = os.path.expanduser(f"~/.claude-sync-{PROJECT_NAME}-imported")
 STAMP_RE = re.compile(r"claude-" + re.escape(PROJECT_NAME) + r"-(\\d{8}-\\d{6})\\.tar\\.gz$")
 
 
+def under_repo(cwd):
+    a = os.path.normcase(os.path.normpath(cwd))
+    b = os.path.normcase(os.path.normpath(REPO_ROOT))
+    return a == b or a.startswith(b + os.sep)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -130,7 +159,7 @@ def main():
 
     cwd = payload.get("cwd", "")
     source = payload.get("source", "")
-    if not cwd.startswith(REPO_ROOT) or source != "startup":
+    if not under_repo(cwd) or source != "startup":
         return
     if not os.path.isdir(CLOUD_DIR):
         return
@@ -184,12 +213,13 @@ def merge_hooks(settings_path, end_script, start_script):
     if settings_path.exists():
         data = json.loads(settings_path.read_text())
 
+    interp = detect_python()
     data.setdefault("hooks", {})
     data["hooks"]["SessionEnd"] = [
         {
             "matcher": "prompt_input_exit|logout|other",
             "hooks": [
-                {"type": "command", "command": f"python3 {end_script}", "async": True, "timeout": 5}
+                {"type": "command", "command": f"{interp} {end_script}", "async": True, "timeout": 5}
             ],
         }
     ]
@@ -197,7 +227,7 @@ def merge_hooks(settings_path, end_script, start_script):
         {
             "matcher": "startup",
             "hooks": [
-                {"type": "command", "command": f"python3 {start_script}", "timeout": 10}
+                {"type": "command", "command": f"{interp} {start_script}", "timeout": 10}
             ],
         }
     ]
