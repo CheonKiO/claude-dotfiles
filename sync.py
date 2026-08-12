@@ -36,6 +36,8 @@ def copy_file(name):
 
 def copy_tree(name):
     src = REPO_DIR / name
+    if not src.exists():
+        return
     dst = CLAUDE_DIR / name
     dst.mkdir(parents=True, exist_ok=True)
     for item in src.rglob("*"):
@@ -82,6 +84,42 @@ def merge_hooks():
     print(f"merged hooks into settings.json (interpreter: {interp})")
 
 
+def merge_permissions():
+    """Add this repo's curated safe allow-rules to settings.json without removing any
+    rule already there. Additive + dedup only (capture never pulls permissions back,
+    so the curated list stays hand-maintained in the repo)."""
+    frag_path = REPO_DIR / "permissions.settings.json"
+    if not frag_path.exists():
+        return
+    curated = json.loads(frag_path.read_text()).get("permissions", {}).get("allow", [])
+    settings_path = CLAUDE_DIR / "settings.json"
+    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    allow = settings.setdefault("permissions", {}).setdefault("allow", [])
+    seen = set(allow)
+    added = 0
+    for rule in curated:
+        if rule not in seen:
+            allow.append(rule)
+            seen.add(rule)
+            added += 1
+    settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+    print(f"merged {added} permission allow rule(s)")
+
+
+def register_statusline():
+    """Point settings.json statusLine at the deployed statusline.py with this OS's
+    interpreter. Derived per-machine (not synced), so capture.py leaves it alone."""
+    script = CLAUDE_DIR / "statusline.py"
+    if not script.exists():
+        return
+    interp = detect_python()
+    settings_path = CLAUDE_DIR / "settings.json"
+    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    settings["statusLine"] = {"type": "command", "command": f'{interp} "{script}"'}
+    settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+    print("registered statusLine")
+
+
 def main():
     CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
     copy_file("CLAUDE.md")
@@ -90,7 +128,12 @@ def main():
     copy_tree("hooks")
     copy_file("claude-export.py")
     copy_file("claude-import.py")
+    copy_file("statusline.py")
+    for d in ("commands", "agents", "output-styles"):
+        copy_tree(d)
     merge_hooks()
+    register_statusline()
+    merge_permissions()
     print(f"done → {CLAUDE_DIR}")
 
 

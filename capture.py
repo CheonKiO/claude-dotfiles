@@ -74,6 +74,9 @@ def main():
     copy_tree("hooks")
     copy_file("claude-export.py")
     copy_file("claude-import.py")
+    copy_file("statusline.py")
+    for d in ("commands", "agents", "output-styles"):
+        copy_tree(d)
     capture_hooks_fragment()
     print("done — review with `git diff`, then commit + push")
 
