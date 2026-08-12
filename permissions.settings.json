@@ -51,6 +51,10 @@
       "Bash(comm:*)",
       "Bash(tac:*)",
       "Bash(rev:*)",
+      "Bash(cd:*)",
+      "Bash(./gradlew:*)",
+      "Bash(gradlew:*)",
+      "Bash(gradle:*)",
       "Edit(~/**/private/**)",
       "Write(~/**/private/**)"
     ]
