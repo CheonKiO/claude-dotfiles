@@ -241,11 +241,15 @@ def main():
     ap.add_argument("--repo", required=True, help="Absolute path to the project repo root")
     ap.add_argument("--cloud-dir", required=True, help="Base cloud-drive folder (e.g. iCloud Drive root)")
     ap.add_argument("--project-name", default=None, help="Defaults to the repo directory's basename")
+    ap.add_argument("--no-subdir", action="store_true",
+                    help="Use --cloud-dir verbatim as the project's cloud folder "
+                         "(default appends claude-sync-<project> for per-project isolation)")
     args = ap.parse_args()
 
     repo_root = str(Path(args.repo).resolve())
     project_name = args.project_name or Path(repo_root).name
-    cloud_dir = str(Path(args.cloud_dir) / f"claude-sync-{project_name}")
+    cloud_dir = (str(Path(args.cloud_dir)) if args.no_subdir
+                 else str(Path(args.cloud_dir) / f"claude-sync-{project_name}"))
 
     Path(cloud_dir).mkdir(parents=True, exist_ok=True)
 
