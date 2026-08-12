@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""claude-import.py — unpack a claude-export.py archive into this machine's ~/.claude.
+Run from inside the extracted claude-export/ folder (after `tar -xzf ...`).
+
+Restores every project slug (main + worktrees + docs/superpowers/plans) plus global files.
+Gotcha: a slug encodes the ORIGINAL absolute path. If this machine stores the repo at a
+different path (different username/drive), pass --new-repo-path to rewrite every slug's base
+(sub-paths like worktrees are preserved). Cross-platform, stdlib only.
+
+  same path:      python claude-import.py
+  different path:  python claude-import.py --new-repo-path /home/bob/work/S15P11A107
+"""
+import argparse
+import datetime
+import os
+import re
+import shutil
+import sys
+from pathlib import Path
+
+SLUG_RE = re.compile(r"[/\\.:]")
+
+
+def path_to_slug(path):
+    return SLUG_RE.sub("-", path)
+
+
+def backup(target: Path):
+    if not target.exists():
+        return
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    bak = target.with_name(target.name + f".bak-{stamp}")
+    print(f"   backing up existing: {target.name} -> {bak.name}")
+    shutil.move(str(target), str(bak))
+
+
+def copy_into(src: Path, dst: Path):
+    """Copy file or tree src -> dst (dst must not exist; caller backs it up first)."""
+    if src.is_dir():
+        shutil.copytree(src, dst)
+    else:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--new-repo-path", default=os.environ.get("NEW_REPO_PATH"),
+                    help="Rewrite slug base to this repo path on the new machine")
+    args = ap.parse_args()
+
+    claude_dir = Path(os.environ.get("CLAUDE_DIR", str(Path.home() / ".claude")))
+    src = Path(__file__).resolve().parent
+
+    repo_root_file = src / "REPO_ROOT.txt"
+    old_root = repo_root_file.read_text(encoding="utf-8").strip() if repo_root_file.is_file() else ""
+    if not old_root:
+        sys.exit("!! REPO_ROOT.txt missing in archive — run from inside extracted claude-export/")
+    old_base = path_to_slug(old_root)
+
+    new_repo = args.new_repo_path
+    new_base = path_to_slug(str(Path(new_repo).resolve())) if new_repo else old_base
+    dest_repo = str(Path(new_repo).resolve()) if new_repo else old_root
+
+    print(f">> target ~/.claude = {claude_dir}")
+    print(f">> base path {old_root}  (slug {old_base})")
+    if new_base != old_base:
+        print(f"   rewrite -> {dest_repo}  (slug {new_base})")
+
+    (claude_dir / "projects").mkdir(parents=True, exist_ok=True)
+
+    # --- project slugs ---
+    src_projects = src / "projects"
+    if src_projects.is_dir():
+        for slug_dir in sorted(src_projects.iterdir()):
+            if not slug_dir.is_dir():
+                continue
+            old_slug = slug_dir.name
+            if old_slug.startswith(old_base):
+                new_slug = new_base + old_slug[len(old_base):]
+            else:
+                new_slug = old_slug
+            dest = claude_dir / "projects" / new_slug
+            print(f">> restore: {old_slug}")
+            if new_slug != old_slug:
+                print(f"        -> {new_slug}")
+            backup(dest)
+            copy_into(slug_dir, dest)
+
+    # --- global files ---
+    for f in ("CLAUDE.md", "RTK.md", "settings.json"):
+        s = src / f
+        if s.is_file():
+            backup(claude_dir / f)
+            print(f">> {f}")
+            copy_into(s, claude_dir / f)
+
+    plugins = src / "plugins"
+    if plugins.is_dir():
+        backup(claude_dir / "plugins")
+        print(">> plugins/")
+        copy_into(plugins, claude_dir / "plugins")
+
+    # --- personal docs (private/) restored under the destination repo ---
+    private = src / "private"
+    if private.is_dir():
+        dest_repo_path = Path(dest_repo)
+        if dest_repo_path.is_dir():
+            backup(dest_repo_path / "private")
+            print(f">> private/ -> {dest_repo_path / 'private'}")
+            copy_into(private, dest_repo_path / "private")
+        else:
+            print(f"!! warning: {dest_repo} missing — can't restore private/. "
+                  f"Clone the repo first, then copy manually from: {private}", file=sys.stderr)
+
+    # --- .git/info/exclude — a fresh clone has none, so private/ etc. show as untracked ---
+    exclude_src = src / "git-info-exclude.txt"
+    exclude_dst_parent = Path(dest_repo) / ".git" / "info"
+    if exclude_src.is_file() and (Path(dest_repo) / ".git").is_dir():
+        exclude_dst_parent.mkdir(parents=True, exist_ok=True)
+        print(f">> .git/info/exclude -> {exclude_dst_parent / 'exclude'}")
+        shutil.copy2(exclude_src, exclude_dst_parent / "exclude")
+
+    stamp_file = src / "EXPORT_STAMP.txt"
+    if stamp_file.is_file():
+        shutil.copy2(stamp_file, Path.home() / ".claude-sync-imported")
+
+    print()
+    print("restore complete.")
+    print()
+    print("notes:")
+    print(" 1) login token not transferred. run 'claude' on this machine to log in.")
+    print(f" 2) hook commands in settings.json/plugins may still hold the old machine's")
+    print(f"    absolute paths — run this repo's sync.py to re-render them for this OS.")
+    if new_base != old_base:
+        print(f" 3) keep the repo at {dest_repo} so sessions link (worktrees under it too).")
+    else:
+        print(f" 3) keep the repo at {old_root} so sessions link, or re-run with --new-repo-path.")
+
+
+if __name__ == "__main__":
+    main()
