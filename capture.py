@@ -67,6 +67,26 @@ def capture_hooks_fragment():
     print("captured hooks.settings.json (managed hooks only, interpreter -> __PY__)")
 
 
+def capture_plugins_manifest():
+    """Snapshot the enabled plugins + their github marketplaces so install-plugins.py
+    can reproduce them on another machine."""
+    settings_path = CLAUDE_DIR / "settings.json"
+    if not settings_path.exists():
+        return
+    s = json.loads(settings_path.read_text())
+    marketplaces = {
+        name: mk["source"]["repo"]
+        for name, mk in s.get("extraKnownMarketplaces", {}).items()
+        if mk.get("source", {}).get("source") == "github" and mk.get("source", {}).get("repo")
+    }
+    plugins = [p for p, on in s.get("enabledPlugins", {}).items() if on]
+    manifest = {"marketplaces": marketplaces, "plugins": plugins}
+    (REPO_DIR / "plugins.manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    )
+    print("captured plugins.manifest.json")
+
+
 def main():
     copy_file("CLAUDE.md")
     copy_file("RTK.md")
@@ -75,9 +95,11 @@ def main():
     copy_file("claude-export.py")
     copy_file("claude-import.py")
     copy_file("statusline.py")
+    copy_file("install-plugins.py")
     for d in ("commands", "agents", "output-styles"):
         copy_tree(d)
     capture_hooks_fragment()
+    capture_plugins_manifest()
     print("done — review with `git diff`, then commit + push")
 
 

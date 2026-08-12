@@ -129,6 +129,8 @@ def main():
     copy_file("claude-export.py")
     copy_file("claude-import.py")
     copy_file("statusline.py")
+    copy_file("install-plugins.py")
+    copy_file("plugins.manifest.json")
     for d in ("commands", "agents", "output-styles"):
         copy_tree(d)
     merge_hooks()

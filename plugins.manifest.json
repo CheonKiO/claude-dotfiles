@@ -1,0 +1,12 @@
+{
+  "marketplaces": {
+    "enix": "enixCode/plugins",
+    "caveman": "JuliusBrussee/caveman",
+    "understand-anything": "Egonex-AI/Understand-Anything"
+  },
+  "plugins": [
+    "superpowers@claude-plugins-official",
+    "rtk-plugin@enix",
+    "caveman@caveman"
+  ]
+}
