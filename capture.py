@@ -7,6 +7,8 @@ import json
 import shutil
 from pathlib import Path
 
+from sync import MANAGED_SCRIPTS, PY_TOKEN, detect_python
+
 REPO_DIR = Path(__file__).resolve().parent
 CLAUDE_DIR = Path.home() / ".claude"
 
@@ -35,11 +37,34 @@ def capture_hooks_fragment():
     if not settings_path.exists():
         return
     settings = json.loads(settings_path.read_text())
-    fragment = {"hooks": settings.get("hooks", {})}
+    interp = detect_python()
+
+    def untoken(command):
+        command = command or ""
+        if interp and command.startswith(interp + " "):
+            return PY_TOKEN + command[len(interp):]
+        return command
+
+    # Keep only the hooks this repo owns, and re-tokenize the concrete interpreter back
+    # to __PY__ so the committed fragment stays OS-neutral (mirror of sync.merge_hooks).
+    hooks = {}
+    for event, entries in settings.get("hooks", {}).items():
+        kept = []
+        for e in entries:
+            managed = [
+                {**h, "command": untoken(h.get("command"))}
+                for h in e.get("hooks", [])
+                if any(s in (h.get("command") or "") for s in MANAGED_SCRIPTS)
+            ]
+            if managed:
+                kept.append({**e, "hooks": managed})
+        if kept:
+            hooks[event] = kept
+
     (REPO_DIR / "hooks.settings.json").write_text(
-        json.dumps(fragment, indent=2, ensure_ascii=False) + "\n"
+        json.dumps({"hooks": hooks}, indent=2, ensure_ascii=False) + "\n"
     )
-    print("captured hooks.settings.json")
+    print("captured hooks.settings.json (managed hooks only, interpreter -> __PY__)")
 
 
 def main():
@@ -47,6 +72,8 @@ def main():
     copy_file("RTK.md")
     copy_tree("skills")
     copy_tree("hooks")
+    copy_file("claude-export.py")
+    copy_file("claude-import.py")
     capture_hooks_fragment()
     print("done — review with `git diff`, then commit + push")
 

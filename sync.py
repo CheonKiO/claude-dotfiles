@@ -13,6 +13,19 @@ from pathlib import Path
 REPO_DIR = Path(__file__).resolve().parent
 CLAUDE_DIR = Path.home() / ".claude"
 
+PY_TOKEN = "__PY__"
+# Managed hooks this repo owns — matched by script basename so a prior version
+# (old hardcoded path or a different interpreter) is replaced, never duplicated.
+MANAGED_SCRIPTS = ("file-size-guard.py", "git-fetch-guard.py")
+
+
+def detect_python():
+    """Interpreter invocation that exists on this OS: python3 -> python -> py -3."""
+    for cand in (["python3"], ["python"], ["py", "-3"]):
+        if shutil.which(cand[0]):
+            return " ".join(cand)
+    return "python3"
+
 
 def copy_file(name):
     src = REPO_DIR / name
@@ -34,9 +47,14 @@ def copy_tree(name):
     print(f"copied {name}/")
 
 
+def _is_managed(command):
+    return any(s in (command or "") for s in MANAGED_SCRIPTS)
+
+
 def merge_hooks():
     fragment = json.loads((REPO_DIR / "hooks.settings.json").read_text())
     incoming = fragment.get("hooks", {})
+    interp = detect_python()
 
     settings_path = CLAUDE_DIR / "settings.json"
     settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
@@ -44,22 +62,24 @@ def merge_hooks():
 
     for event, entries in incoming.items():
         existing = hooks.setdefault(event, [])
-        existing_keys = {
-            (e.get("matcher"), h.get("command"))
-            for e in existing
-            for h in e.get("hooks", [])
-        }
+        # Drop any prior version of our managed hooks (old hardcoded /home path or a
+        # stale interpreter) so re-running never leaves the hook registered twice.
+        pruned = []
+        for e in existing:
+            kept = [h for h in e.get("hooks", []) if not _is_managed(h.get("command"))]
+            if kept:
+                pruned.append({**e, "hooks": kept})
+        existing[:] = pruned
+        # Insert current definitions, rendering __PY__ -> this OS's interpreter.
         for entry in entries:
-            matcher = entry.get("matcher")
-            new_hooks = [
-                h for h in entry.get("hooks", [])
-                if (matcher, h.get("command")) not in existing_keys
+            rendered = [
+                {**h, "command": (h.get("command") or "").replace(PY_TOKEN, interp)}
+                for h in entry.get("hooks", [])
             ]
-            if new_hooks:
-                existing.append({**entry, "hooks": new_hooks})
+            existing.append({**entry, "hooks": rendered})
 
     settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
-    print("merged hooks into settings.json")
+    print(f"merged hooks into settings.json (interpreter: {interp})")
 
 
 def main():
@@ -68,6 +88,8 @@ def main():
     copy_file("RTK.md")
     copy_tree("skills")
     copy_tree("hooks")
+    copy_file("claude-export.py")
+    copy_file("claude-import.py")
     merge_hooks()
     print(f"done → {CLAUDE_DIR}")
 
