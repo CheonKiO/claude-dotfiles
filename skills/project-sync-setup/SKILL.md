@@ -5,7 +5,9 @@ description: Use when starting a new project that needs the same cross-machine c
 
 # Project Sync Setup
 
-이음길(S15P11A107) 프로젝트에서 만든 "세션 끝나면 클라우드로 자동 백업, 시작하면 새 백업 있는지 알려주기" 패턴을 새 프로젝트에 그대로 심는 스킬. `~/claude-export.sh`/`~/claude-import.sh`(전역, 프로젝트에 안 묶임)는 이미 `REPO_ROOT`/`PROJECT_NAME` env var로 어느 프로젝트든 재사용 가능하게 만들어져 있음 — 이 스킬은 그 위에 얹는 **프로젝트별 훅 배선**만 새로 만든다.
+이음길(S15P11A107) 프로젝트에서 만든 "세션 끝나면 클라우드로 자동 백업, 시작하면 새 백업 있는지 알려주기" 패턴을 새 프로젝트에 그대로 심는 스킬. 전역 exporter/importer는 `~/.claude/claude-export.py`/`claude-import.py`(순수 Python, Linux·macOS·WSL·네이티브 Windows 공통 — 이 repo의 `sync.py`가 배포)이며 `--repo`/`--project-name`/`--out-dir` 인자로 어느 프로젝트든 재사용 가능 — 이 스킬은 그 위에 얹는 **프로젝트별 훅 배선**만 새로 만든다.
+
+전제: 먼저 이 repo의 `sync.py`를 한 번 돌려 `~/.claude/`에 `claude-export.py`/`claude-import.py`가 배포돼 있어야 한다.
 
 ## 언제 쓰나
 
@@ -29,7 +31,7 @@ python3 ~/.claude/skills/project-sync-setup/setup.py \
 ```
 
 이게 하는 일:
-- `<repo>/.claude/hooks/session-end-sync.py` — SessionEnd(`prompt_input_exit`/`logout`/`other`)에서 백그라운드로 `~/claude-export.sh` 호출. 원자적 락(`O_CREAT|O_EXCL`)으로 동시 다중세션 종료 시 중복 실행 방지. 스로틀 10초(순간적 버스트만 뭉치고, 진짜 재종료는 절대 안 막음 — 5분처럼 길게 잡으면 그 사이 대화가 안 담긴 채 넘어갈 수 있음, 이음길에서 실제로 지적된 문제).
+- `<repo>/.claude/hooks/session-end-sync.py` — SessionEnd(`prompt_input_exit`/`logout`/`other`)에서 백그라운드로 `~/.claude/claude-export.py`를 `sys.executable`로 호출(detach는 OS 분기: POSIX `start_new_session`, Windows `DETACHED_PROCESS`). 원자적 락(`O_CREAT|O_EXCL`)으로 동시 다중세션 종료 시 중복 실행 방지. 스로틀 10초(순간적 버스트만 뭉치고, 진짜 재종료는 절대 안 막음 — 5분처럼 길게 잡으면 그 사이 대화가 안 담긴 채 넘어갈 수 있음, 이음길에서 실제로 지적된 문제).
 - `<repo>/.claude/hooks/session-start-check.py` — SessionStart(`startup`)에서 클라우드에 안 가져온 최신 아카이브 있으면 `initialUserMessage`로 강제 주입(그냥 `additionalContext`만 쓰면 조용히 씹힐 수 있음 — 이음길에서 실측으로 확인된 약점). 절대 자동 import 안 함.
 - `<repo>/.claude/settings.local.json`에 두 훅 등록(기존 내용 보존, hooks 키만 병합).
 - 클라우드 서브폴더 생성.
@@ -45,3 +47,5 @@ python3 ~/.claude/skills/project-sync-setup/setup.py \
 - **훅 payload 필드명은 문서랑 다를 수 있다** — `SessionEnd`의 사유 필드는 문서상 `session_end_reason`이라 나왔지만 실제로는 `reason`이었음(이 템플릿은 이미 `reason`으로 맞춰져 있음). 다른 필드도 의심되면 훅 스크립트에 디버그 로그 한 줄(`json.dump(payload, ...)`) 임시로 넣어서 실측할 것.
 - **`/tmp`는 훅 실행마다 격리될 수 있다** — 상태 파일(스로틀·마커 등)은 `$HOME` 밑에 둘 것, `/tmp` 쓰지 말 것(이 템플릿은 이미 그렇게 돼있음).
 - **import는 절대 자동화하지 않는다** — 압축 손상 위험, 그리고 "같은 컴퓨터에서 껐다 켠 것"일 수도 있어서 무조건 사람이 확인하고 실행.
+- **네이티브 Windows slug 인코딩은 미검증** — exporter/importer는 절대경로의 `/ \ . :` 를 `-` 로 바꿔 프로젝트 slug을 만든다(POSIX 실측 완료: `/home/kio/S15P11A107` → `-home-kio-S15P11A107`). Claude Code가 네이티브 Windows cwd(`C:\Users\..`)를 실제로 어떻게 slug화하는지는 확인 안 됨 — Windows에서 처음 돌릴 때 `~/.claude/projects` 실제 폴더명과 대조해서 규칙이 맞는지 검증할 것. 다르면 `SLUG_RE`/`path_to_slug` 조정 필요.
+- **머신 간 경로 다르면** `claude-import.py --new-repo-path <이 컴의 repo 경로>` 로 slug base 재작성(유저이름·드라이브 달라도 세션 연결 유지). 안 주면 원본 경로 그대로 복원돼 세션이 안 붙을 수 있음.
