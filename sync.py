@@ -16,7 +16,7 @@ CLAUDE_DIR = Path.home() / ".claude"
 PY_TOKEN = "__PY__"
 # Managed hooks this repo owns — matched by script basename so a prior version
 # (old hardcoded path or a different interpreter) is replaced, never duplicated.
-MANAGED_SCRIPTS = ("file-size-guard.py", "git-fetch-guard.py")
+MANAGED_SCRIPTS = ("file-size-guard.py", "git-fetch-guard.py", "notify.sh")
 
 
 def detect_python():
