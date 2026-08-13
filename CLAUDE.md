@@ -81,7 +81,7 @@ Delegate to a subagent (Agent tool) when a task is independent/parallelizable, e
 | High difficulty (architecture, hard-to-reproduce bugs, high-stakes calls) | `opus` |
 | **Review / verification** (diff/branch/task review) | **`fable`** |
 
-**Account check** — read `rateLimitTier` from `~/.claude/.credentials.json` (never print its token fields, only this label — it directly reflects usage headroom, more precisely than `subscriptionType`). A `max` tier (e.g. `default_claude_max_5x`, `default_claude_max_20x`) uses the table above as-is. `default_claude_pro` or anything else/unrecognized shifts every tier down one (haiku/sonnet/opus), no review exception — less headroom, so default to the cheaper tier. Note: this field is cached at login and can lag a real plan change until the next re-login (anthropics/claude-code#43639) — if a tier change doesn't seem to be taking effect, ask the user whether they've re-logged in since upgrading.
+**Account check** — read `claudeAiOauth.subscriptionType` from `~/.claude/.credentials.json` (never print its token fields, only this plan label). `team`, `max`, or `enterprise` uses the table above as-is (full headroom). `pro`, `free`, or anything else/unrecognized shifts every tier down one (haiku/sonnet/opus), no review exception — less headroom, so default to the cheaper tier. Note: this field is cached at login and can lag a real plan change until the next re-login (anthropics/claude-code#43639) — if a tier change doesn't seem to be taking effect, ask the user whether they've re-logged in since upgrading.
 
 Run independent delegations in parallel (multiple Agent calls in one message) rather than sequentially.
 
