@@ -89,7 +89,6 @@ def capture_plugins_manifest():
 
 def main():
     copy_file("CLAUDE.md")
-    copy_file("RTK.md")
     copy_tree("skills")
     copy_tree("hooks")
     copy_file("claude-export.py")

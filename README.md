@@ -12,7 +12,7 @@
 
 | 항목 | 파일/폴더 | 설명 |
 |---|---|---|
-| 행동 지침 | `CLAUDE.md`, `RTK.md` | 세션 시작 시 항상 로드되는 개인 규칙 |
+| 행동 지침 | `CLAUDE.md` | 세션 시작 시 항상 로드되는 개인 규칙 |
 | 스킬 | `skills/` | `full-review`, `live-contract-check`, `project-sync-setup`, `wip-then-squash`, `worktree-cleanup` |
 | 훅 | `hooks/` | 아래 3종 (파일) + `hooks.settings.json`(등록 정보) |
 | 권한 허용목록 | `permissions.settings.json` | 매번 물어보지 않아도 되는 안전한 명령 allowlist (읽기 전용 도구·gradle 등) |

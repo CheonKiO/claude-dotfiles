@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install this repo's Claude Code config into ~/.claude on the current machine.
 
-Safe to re-run (idempotent): overwrites CLAUDE.md/RTK.md/skills/hooks with this
+Safe to re-run (idempotent): overwrites CLAUDE.md/skills/hooks with this
 repo's version, and merges hook registrations into settings.json without
 duplicating entries or touching any other settings.json keys (permissions,
 enabledPlugins, etc. stay whatever they already are on this machine).
@@ -123,7 +123,6 @@ def register_statusline():
 def main():
     CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
     copy_file("CLAUDE.md")
-    copy_file("RTK.md")
     copy_tree("skills")
     copy_tree("hooks")
     copy_file("claude-export.py")
