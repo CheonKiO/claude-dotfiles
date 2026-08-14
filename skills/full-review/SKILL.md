@@ -39,6 +39,7 @@ description: Use when doing a periodic whole-codebase/whole-branch review (not a
 - 이 축이 봐야 할 범위(디렉토리/도메인)
 - "지적할 게 없으면 없다고 써라" — 억지로 findings 만들지 않게
 - 심각도 기준: 🔴 BLOCKER(배포/보안 사고급) · 🟠 HIGH(기능 깨짐) · 🟡 MED(개선) · ⚪ LOW(스타일/정리)
+- **파일 쓰기 가능한 에이전트로 파견한다.** read-only 리뷰 전용 서브에이전트(Write 도구 없음)는 저장 지시를 못 지키고 findings를 대화 응답으로만 반환한다 — general-purpose 등 Write 가능한 타입을 써라.
 - **출력은 파일로 저장하게 한다.** 대화 응답으로만 받지 않는다 — 세션이 죽거나 컴퓨터가 꺼지면 파일에 안 떨어진 결과는 사라진다(실제로 이 프로젝트에서 4차 리뷰 중 컴퓨터가 꺼져 서브에이전트 2개 결과가 유실된 사고가 있었음). 각 에이전트가 끝나는 즉시 `REVIEW_<축이름>.md` 같은 파일에 쓰게 하라.
 
 ### 3. 병합
