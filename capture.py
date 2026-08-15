@@ -95,7 +95,7 @@ def main():
     copy_file("claude-import.py")
     copy_file("statusline.py")
     copy_file("install-plugins.py")
-    for d in ("commands", "agents", "output-styles"):
+    for d in ("commands", "agents", "output-styles", "rules"):
         copy_tree(d)
     capture_hooks_fragment()
     capture_plugins_manifest()

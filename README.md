@@ -12,8 +12,9 @@
 
 | 항목 | 파일/폴더 | 설명 |
 |---|---|---|
-| 행동 지침 | `CLAUDE.md` | 세션 시작 시 항상 로드되는 개인 규칙 |
-| 스킬 | `skills/` | `full-review`, `live-contract-check`, `project-sync-setup`, `wip-then-squash`, `worktree-cleanup` |
+| 행동 지침 | `CLAUDE.md` | 세션 시작 시 항상 로드되는 개인 규칙. 매턴 적용되는 것만 인라인, 특수 상황용은 아래 `rules/`·스킬로 분리 |
+| 상황별 규칙 | `rules/` | 특수 상황에서만 읽는 참조 문서 — `knowledge-propagation`(문서 배치·완료 기록), `doc-review`(긴 문서 리뷰), `git-hygiene`(머지·리베이스·브랜치 정리). CLAUDE.md 상단 포인터 표로 트리거 |
+| 스킬 | `skills/` | `delegation-tiering`, `full-review`, `live-contract-check`, `project-sync-setup`, `wip-then-squash`, `worktree-cleanup` |
 | 훅 | `hooks/` | 아래 3종 (파일) + `hooks.settings.json`(등록 정보) |
 | 권한 허용목록 | `permissions.settings.json` | 매번 물어보지 않아도 되는 안전한 명령 allowlist (읽기 전용 도구·gradle 등) |
 | 상태줄 | `statusline.py` | 프롬프트 하단 상태줄 |
