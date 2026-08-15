@@ -85,8 +85,6 @@ Before writing the first code in a new area (new app, package, or frontend modul
 
 Why: AI makes code nearly free to add. Without a verification loop, debt piles up exactly as fast as the code does. Real case: same project, same author — the backend (580 tests) graded A; the frontend (0 tests) became a 3,500-line god component. Not a skill gap — a loop gap.
 
-**Don't declare something "done" without verification.** Cite the test/build output as evidence, not a claim.
-
 ## 6. Structural Guardrails
 
 Without instruction, AI defaults to appending to the file that's already open — it's the path of least resistance, not a judgment call. Counteract with defaults:
