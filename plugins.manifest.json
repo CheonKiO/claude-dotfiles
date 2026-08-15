@@ -10,6 +10,7 @@
     "caveman@caveman",
     "context7@claude-plugins-official",
     "playwright@claude-plugins-official",
-    "frontend-design@claude-plugins-official"
+    "frontend-design@claude-plugins-official",
+    "understand-anything@understand-anything"
   ]
 }
