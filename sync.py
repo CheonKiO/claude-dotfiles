@@ -130,7 +130,7 @@ def main():
     copy_file("statusline.py")
     copy_file("install-plugins.py")
     copy_file("plugins.manifest.json")
-    for d in ("commands", "agents", "output-styles"):
+    for d in ("commands", "agents", "output-styles", "rules"):
         copy_tree(d)
     merge_hooks()
     register_statusline()

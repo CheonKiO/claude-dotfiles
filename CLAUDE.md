@@ -4,6 +4,17 @@ Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-s
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
+## Situational references (read on demand)
+
+The rules below apply every turn. These apply only in specific situations — read the file/skill when you hit the trigger, then fold it into your judgment.
+
+| Trigger | Where |
+|---|---|
+| About to spawn a subagent / pick a model tier | `delegation-tiering` skill (auto) |
+| Design finalized · feature wraps · writing commit/MR body | `~/.claude/rules/knowledge-propagation.md` |
+| Asked to review/read a long existing document | `~/.claude/rules/doc-review.md` |
+| Around merges, rebases, branch/worktree cleanup | `~/.claude/rules/git-hygiene.md` |
+
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**
@@ -64,28 +75,7 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-## 5. Subagent Delegation & Model Tiering
-
-**Delegate by default. Match model to task difficulty.**
-
-This overrides the harness default of "don't spawn agents unless asked" — delegate proactively when a task fits the criteria below, without waiting for the user to request it.
-
-Delegate to a subagent (Agent tool) when a task is independent/parallelizable, exploratory, a scoped implementation, or review/verification. Keep it inline when it needs tight back-and-forth with the user, is a 1-2 line trivial edit, or depends heavily on context from the immediately preceding turns.
-
-**Model tiers** — set the `model` param on the Agent tool call explicitly (pick whichever `subagent_type` otherwise fits the task; this just fixes the model).
-
-| Difficulty | Model |
-|---|---|
-| Simple / mechanical | `sonnet` |
-| Standard (exploration, multi-file edits, feature work) | `opus` |
-| High difficulty (architecture, hard-to-reproduce bugs, high-stakes calls) | `opus` |
-| **Review / verification** (diff/branch/task review) | **`fable`** |
-
-**Account check** — read `claudeAiOauth.subscriptionType` from `~/.claude/.credentials.json` (never print its token fields, only this plan label). `team`, `max`, or `enterprise` uses the table above as-is (full headroom). `pro`, `free`, or anything else/unrecognized shifts every tier down one (haiku/sonnet/opus), no review exception — less headroom, so default to the cheaper tier. Note: this field is cached at login and can lag a real plan change until the next re-login (anthropics/claude-code#43639) — if a tier change doesn't seem to be taking effect, ask the user whether they've re-logged in since upgrading.
-
-Run independent delegations in parallel (multiple Agent calls in one message) rather than sequentially.
-
-## 6. Verification Loop First
+## 5. Verification Loop First
 
 **Don't generate code in an area that has no way to verify it.**
 
@@ -97,7 +87,7 @@ Why: AI makes code nearly free to add. Without a verification loop, debt piles u
 
 **Don't declare something "done" without verification.** Cite the test/build output as evidence, not a claim.
 
-## 7. Structural Guardrails
+## 6. Structural Guardrails
 
 Without instruction, AI defaults to appending to the file that's already open — it's the path of least resistance, not a judgment call. Counteract with defaults:
 
@@ -107,30 +97,6 @@ Without instruction, AI defaults to appending to the file that's already open �
 - If a file you're about to touch is already over the limit, say so before starting.
 
 "Move fast now, clean up later" doesn't happen — treat later as never.
-
-## 8. Knowledge Propagation
-
-Separate personal scratch (PLAN.md, REVIEW.md, session notes) from team-facing docs.
-
-**Self-authored scratch/planning/report docs default to one gitignored staging directory** (e.g. `private/`), not scattered loose at the repo root or inside `docs/`. If the project doesn't have one yet, create it and add a single directory line to `.git/info/exclude` — don't add filenames one at a time as they come up. Exceptions: a file whose location is fixed by tooling (e.g. `CLAUDE.md` must stay at the project root to auto-load; a skill's hardcoded plan/spec path) stays where the tool expects it, individually ignored. This does not apply to code — code always goes in its normal tracked location.
-
-- When a design decision is finalized, propose promoting it from the staging directory into the project's real `docs/` (or wherever the team keeps it) — moving the file out and `git add`-ing it *is* the promotion. Don't let it live only in the staging directory or chat history.
-- When a feature-sized task wraps up, propose a short summary: what changed, why, gotchas, files touched.
-- Commit/MR bodies explain **what and why**; let the diff speak for **how**.
-
-## 9. Work Hygiene
-
-- Propose cleaning up branches/worktrees right after a merge lands — zombies left to accumulate cost far more to untangle later.
-- If a rebase is about to make commits unreachable from any branch, flag it before doing it — those commits stop being citable evidence.
-- After a subagent finishes, check whether gitignored files (`.env`, etc.) changed. `git diff` never shows this — check explicitly.
-
-## 10. Document Review Digest
-
-**When asked to review/read a long document, always lead with a short plain-language summary before anything else.** The user may not have read the whole thing — don't assume they did.
-
-- Open with what the document is about and its 3-5 main points, in accessible language (not a wall of jargon).
-- Then go into detail/findings if needed. Detail follows the summary, never replaces it.
-- This applies to reviewing existing docs (specs, reviews, retrospectives), not to documents you just wrote yourself in this turn.
 
 ---
 
