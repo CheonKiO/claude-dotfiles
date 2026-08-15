@@ -29,6 +29,7 @@ Before implementing:
 
 **Minimum code that solves the problem. Nothing speculative.**
 
+- Before writing new code, check it doesn't already exist: reuse in-codebase code first, then a stdlib/native feature, then an existing dependency — write new only when none fit.
 - No features beyond what was asked.
 - No abstractions for single-use code.
 - No "flexibility" or "configurability" that wasn't requested.
