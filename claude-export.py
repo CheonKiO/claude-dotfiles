@@ -19,6 +19,7 @@ env fallbacks: REPO_ROOT, PROJECT_NAME, CLAUDE_DIR (default ~/.claude), out-dir 
 """
 import argparse
 import datetime
+import json
 import os
 import re
 import shutil
@@ -27,14 +28,63 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-# Absolute path -> Claude Code project-slug: every / \ . : becomes -
-# NOTE: verified on POSIX (/home/kio/S15P11A107 -> -home-kio-S15P11A107). The exact slug
-# Claude Code emits for a native-Windows cwd (C:\Users\..) is unverified — confirm on Windows.
-SLUG_RE = re.compile(r"[/\\.:]")
+# Absolute path -> Claude Code project-slug. Kept only as a fallback: guessing the slug
+# was already wrong once (it also maps _ to -, so /Users/me/ssafy_histour lands in
+# -Users-me-ssafy-histour and this regex missed it, failing the export outright).
+SLUG_RE = re.compile(r"[/\\.:_]")
+
+# How many lines to read from a transcript before giving up on finding its cwd.
+CWD_PROBE_LINES = 40
 
 
 def path_to_slug(path):
     return SLUG_RE.sub("-", path)
+
+
+def slug_cwds(slug_dir):
+    """Every cwd recorded inside a slug's transcripts. Each line carries the absolute
+    working directory it was written from, so this identifies a slug by content instead
+    of by reversing an undocumented naming rule."""
+    found = set()
+    for jsonl in slug_dir.glob("*.jsonl"):
+        try:
+            with jsonl.open(encoding="utf-8") as f:
+                for i, line in enumerate(f):
+                    if i >= CWD_PROBE_LINES:
+                        break
+                    try:
+                        cwd = json.loads(line).get("cwd")
+                    except (json.JSONDecodeError, AttributeError):
+                        continue
+                    if cwd:
+                        found.add(cwd)
+        except OSError:
+            continue
+    return found
+
+
+def find_slugs(proj_dir, repo_root):
+    """Slugs belonging to this repo: any whose transcripts were written at or below
+    repo_root (main tree + worktrees), plus the name-based match so a slug whose
+    transcripts predate the cwd field, or hold none, is still picked up."""
+    prefix = path_to_slug(repo_root)
+    root = Path(repo_root)
+    hits = []
+    for p in sorted(proj_dir.iterdir()):
+        if not p.is_dir():
+            continue
+        if p.name.startswith(prefix):
+            hits.append(p)
+            continue
+        for cwd in slug_cwds(p):
+            try:
+                below = Path(cwd) == root or root in Path(cwd).parents
+            except (ValueError, OSError):
+                below = False
+            if below:
+                hits.append(p)
+                break
+    return hits
 
 
 def main():
@@ -57,15 +107,13 @@ def main():
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     archive = out_dir / f"claude-{project_name}-{stamp}.tar.gz"
 
-    base_slug = path_to_slug(repo_root)
     proj_dir = claude_dir / "projects"
     if not proj_dir.is_dir():
         sys.exit(f"!! projects folder missing: {proj_dir}")
 
-    slugs = sorted(p for p in proj_dir.iterdir()
-                   if p.is_dir() and p.name.startswith(base_slug))
+    slugs = find_slugs(proj_dir, repo_root)
     if not slugs:
-        sys.exit(f"!! no matching slug ({base_slug}*) under {proj_dir}")
+        sys.exit(f"!! no slug under {proj_dir} names or records {repo_root}")
 
     print(f">> {len(slugs)} slug(s):")
     for s in slugs:
