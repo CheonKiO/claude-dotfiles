@@ -7,8 +7,11 @@ Pure-python replacement for the old claude-export.sh.
 
 Project history = every session slug under ~/.claude/projects whose decoded cwd is at or
 below --repo (main tree + worktrees + docs/superpowers/plans etc.).
-Global = CLAUDE.md, RTK.md, settings.json, plugins/.  Personal = <repo>/private/.
-Excluded = .credentials.json (login token), history.jsonl, other projects.
+Personal = <repo>/private/.
+Excluded = global config. CLAUDE.md / settings.json / plugins/ are this dotfiles repo's job
+(sync.py, install-plugins.py); shipping them here only bloated the archive (plugins/cache
+alone was 2.8G) and let an import overwrite what sync.py merges. Also excluded:
+.credentials.json (login token), history.jsonl, other projects.
 
 Usage:
   python claude-export.py --repo /path/to/project [--project-name name] [--out-dir DIR]
@@ -80,12 +83,6 @@ def main():
             print(f">> project history: {s.name}")
             shutil.copytree(s, root / "projects" / s.name)
 
-        for f in ("CLAUDE.md", "RTK.md", "settings.json"):
-            src = claude_dir / f
-            if src.is_file():
-                print(f">> {f}")
-                shutil.copy2(src, root / f)
-
         private = Path(repo_root) / "private"
         if private.is_dir():
             print(">> private/ (in-repo personal docs)")
@@ -95,11 +92,6 @@ def main():
         if exclude.is_file():
             print(">> .git/info/exclude (local gitignore rules)")
             shutil.copy2(exclude, root / "git-info-exclude.txt")
-
-        plugins = claude_dir / "plugins"
-        if plugins.is_dir():
-            print(">> plugins/")
-            shutil.copytree(plugins, root / "plugins")
 
         importer = Path(__file__).resolve().parent / "claude-import.py"
         if importer.is_file():

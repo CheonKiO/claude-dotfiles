@@ -2,7 +2,9 @@
 """claude-import.py — unpack a claude-export.py archive into this machine's ~/.claude.
 Run from inside the extracted claude-export/ folder (after `tar -xzf ...`).
 
-Restores every project slug (main + worktrees + docs/superpowers/plans) plus global files.
+Restores every project slug (main + worktrees + docs/superpowers/plans) and <repo>/private/.
+Global config (CLAUDE.md, settings.json, plugins/) is deliberately untouched — this dotfiles
+repo's sync.py / install-plugins.py own those.
 Gotcha: a slug encodes the ORIGINAL absolute path. If this machine stores the repo at a
 different path (different username/drive), pass --new-repo-path to rewrite every slug's base
 (sub-paths like worktrees are preserved). Cross-platform, stdlib only.
@@ -87,20 +89,6 @@ def main():
             backup(dest)
             copy_into(slug_dir, dest)
 
-    # --- global files ---
-    for f in ("CLAUDE.md", "RTK.md", "settings.json"):
-        s = src / f
-        if s.is_file():
-            backup(claude_dir / f)
-            print(f">> {f}")
-            copy_into(s, claude_dir / f)
-
-    plugins = src / "plugins"
-    if plugins.is_dir():
-        backup(claude_dir / "plugins")
-        print(">> plugins/")
-        copy_into(plugins, claude_dir / "plugins")
-
     # --- personal docs (private/) restored under the destination repo ---
     private = src / "private"
     if private.is_dir():
@@ -130,8 +118,8 @@ def main():
     print()
     print("notes:")
     print(" 1) login token not transferred. run 'claude' on this machine to log in.")
-    print(f" 2) hook commands in settings.json/plugins may still hold the old machine's")
-    print(f"    absolute paths — run this repo's sync.py to re-render them for this OS.")
+    print(" 2) global config is not in this archive by design — run this dotfiles repo's")
+    print("    sync.py (CLAUDE.md/skills/hooks/settings merge) and install-plugins.py.")
     if new_base != old_base:
         print(f" 3) keep the repo at {dest_repo} so sessions link (worktrees under it too).")
     else:
