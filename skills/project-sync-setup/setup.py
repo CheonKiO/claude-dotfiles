@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Bootstrap the SessionEnd/SessionStart cloud-sync automation (built for ieumgil/S15P11A107)
-into a NEW project. Generates project-local hook scripts + registers them in that project's
-.claude/settings.local.json. Requires ~/.claude/claude-export.py (+ claude-import.py) to exist
-— deploy them by running this repo's sync.py. The generated SessionEnd hook invokes the
-exporter with sys.executable and --repo/--project-name/--out-dir args (no bash, cross-platform).
+"""Wire a project's Claude Code state to a cloud remote: a SessionEnd hook that pushes,
+and nothing else.
+
+Saving is automated; pulling never is. The previous version also installed a SessionStart
+hook that injected an initialUserMessage when the remote looked newer, which was wrong in
+two ways: it fired only on `startup`, so resuming a session never saw it, and when it did
+fire it consumed the new session's first turn. The signal now lives in the status line
+(see statusline.py), which is visible in every session and interrupts none of them.
+
+Requires ~/.claude/claude-sync.py (deploy it by running this repo's sync.py) and rclone
+configured with the remote you pass.
 
 Usage:
-  python3 setup.py --repo /path/to/project --cloud-dir "/mnt/c/Users/<winuser>/iCloudDrive" [--project-name myproj]
+  python3 setup.py --repo /path/to/project [--remote gdrive:claude-sync] [--project-name myproj]
 
 Creates:
   <repo>/.claude/hooks/session-end-sync.py
-  <repo>/.claude/hooks/session-start-check.py
-  <repo>/.claude/settings.local.json  (merges SessionEnd/SessionStart hook entries)
-  <cloud-dir>/claude-sync-<project-name>/   (dedicated subfolder, avoids colliding with other projects)
+  <repo>/.claude/settings.local.json   (merges the SessionEnd entry, drops the stale
+                                        SessionStart one if a previous run left it)
 """
 import argparse
 import json
@@ -29,10 +34,12 @@ def detect_python():
             return " ".join(cand)
     return "python3"
 
+
 SESSION_END_TEMPLATE = '''#!/usr/bin/env python3
-"""SessionEnd hook (this project only): auto-export Claude state to the cloud in the
-background on a real end-of-work signal. Never blocks session close, never deletes
-anything except its own project's prior sync archives."""
+"""SessionEnd hook (this project only): push Claude state to the cloud remote on a real
+end-of-work signal. claude-sync.py --detach returns immediately and records the outcome in
+~/.claude/sync-state/, which the status line reads — so closing a session is never held up
+by an upload, and a failed one is still visible afterwards."""
 import json
 import os
 import subprocess
@@ -41,157 +48,60 @@ import time
 
 REPO_ROOT = "__REPO_ROOT__"
 PROJECT_NAME = "__PROJECT_NAME__"
-CLOUD_DIR = "__CLOUD_DIR__"
-EXPORT_SCRIPT = os.path.expanduser("~/.claude/claude-export.py")
-LOG_FILE = os.path.expanduser(f"~/.claude-sync-{PROJECT_NAME}-export.log")
+REMOTE = "__REMOTE__"
+SYNC_SCRIPT = os.path.expanduser("~/.claude/claude-sync.py")
 
-
-def under_repo(cwd):
-    a = os.path.normcase(os.path.normpath(cwd))
-    b = os.path.normcase(os.path.normpath(REPO_ROOT))
-    return a == b or a.startswith(b + os.sep)
 THROTTLE_FILE = os.path.expanduser(f"~/.claude-sync-{PROJECT_NAME}-throttle")
-THROTTLE_SECONDS = 10  # only to collapse a simultaneous multi-tab close burst, not to skip real re-closes
+THROTTLE_SECONDS = 10  # collapses a simultaneous multi-tab close burst, nothing longer
 
 REAL_END_REASONS = {"prompt_input_exit", "logout", "other"}
 
 
-def acquire_throttle():
-    """Atomic check-and-set so concurrent SessionEnds (e.g. closing the IDE with
-    several tabs open) can\'t all pass the throttle at once."""
-    now = time.time()
-    try:
-        fd = os.open(THROTTLE_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(now).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        pass
-
-    try:
-        last = float(open(THROTTLE_FILE).read().strip())
-    except Exception:
-        last = 0
-    if now - last < THROTTLE_SECONDS:
-        return False
-
-    try:
-        os.remove(THROTTLE_FILE)
-    except FileNotFoundError:
-        pass
-    try:
-        fd = os.open(THROTTLE_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(now).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        return False
-
-
-def main():
-    try:
-        payload = json.load(sys.stdin)
-    except Exception:
-        return
-
-    cwd = payload.get("cwd", "")
-    reason = payload.get("reason", "")
-
-    if not under_repo(cwd):
-        return
-    if reason not in REAL_END_REASONS:
-        return
-    if not os.path.isdir(CLOUD_DIR):
-        return
-    if not acquire_throttle():
-        return
-
-    with open(LOG_FILE, "a") as log:
-        kwargs = {"stdout": log, "stderr": log}
-        if os.name == "nt":
-            kwargs["creationflags"] = (
-                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        else:
-            kwargs["start_new_session"] = True
-        # sys.executable = the very interpreter running this hook -> guaranteed present.
-        subprocess.Popen(
-            [sys.executable, EXPORT_SCRIPT,
-             "--repo", REPO_ROOT, "--project-name", PROJECT_NAME, "--out-dir", CLOUD_DIR],
-            **kwargs,
-        )
-
-
-if __name__ == "__main__":
-    main()
-'''
-
-SESSION_START_TEMPLATE = '''#!/usr/bin/env python3
-"""SessionStart hook (this project, fresh startup only): if the cloud folder has a sync
-archive newer than what this machine last imported, force it into Claude\'s first turn via
-initialUserMessage so it actually gets surfaced (additionalContext alone was too easy to
-silently skip) — never auto-imports."""
-import glob
-import json
-import os
-import re
-import sys
-
-REPO_ROOT = "__REPO_ROOT__"
-PROJECT_NAME = "__PROJECT_NAME__"
-CLOUD_DIR = "__CLOUD_DIR__"
-MARKER_FILE = os.path.expanduser(f"~/.claude-sync-{PROJECT_NAME}-imported")
-
-STAMP_RE = re.compile(r"claude-" + re.escape(PROJECT_NAME) + r"-(\\d{8}-\\d{6})\\.tar\\.gz$")
-
-
 def under_repo(cwd):
     a = os.path.normcase(os.path.normpath(cwd))
     b = os.path.normcase(os.path.normpath(REPO_ROOT))
     return a == b or a.startswith(b + os.sep)
 
 
+def acquire_throttle():
+    """Atomic check-and-set so concurrent SessionEnds (e.g. closing the IDE with several
+    tabs open) do not all fire a push."""
+    now = time.time()
+    try:
+        with open(THROTTLE_FILE) as f:
+            if now - float(f.read().strip()) < THROTTLE_SECONDS:
+                return False
+    except (OSError, ValueError):
+        pass
+    try:
+        fd = os.open(THROTTLE_FILE, os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
+        with os.fdopen(fd, "w") as f:
+            f.write(str(now))
+        return True
+    except OSError:
+        return False
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
         return
 
-    cwd = payload.get("cwd", "")
-    source = payload.get("source", "")
-    if not under_repo(cwd) or source != "startup":
+    if not under_repo(payload.get("cwd", "")):
         return
-    if not os.path.isdir(CLOUD_DIR):
+    if payload.get("reason", "") not in REAL_END_REASONS:
+        return
+    if not os.path.isfile(SYNC_SCRIPT):
+        return
+    if not acquire_throttle():
         return
 
-    archives = glob.glob(os.path.join(CLOUD_DIR, f"claude-{PROJECT_NAME}-*.tar.gz"))
-    stamped = sorted(
-        (m.group(1), path) for path in archives for m in [STAMP_RE.search(path)] if m
+    subprocess.run(
+        [sys.executable, SYNC_SCRIPT, "push", "--repo", REPO_ROOT,
+         "--project-name", PROJECT_NAME, "--remote", REMOTE, "--detach"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    if not stamped:
-        return
-    latest_stamp, latest_path = stamped[-1]
-
-    last_imported = ""
-    if os.path.exists(MARKER_FILE):
-        last_imported = open(MARKER_FILE).read().strip()
-
-    if latest_stamp == last_imported:
-        return
-
-    archive_name = os.path.basename(latest_path)
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "initialUserMessage": (
-                f"[claude-sync] 클라우드에 이 컴퓨터가 아직 안 가져온 동기화 아카이브가 있음: "
-                f"{archive_name}. 지금 import할지 나한테 물어봐줘 — 절대 네가 자동으로 풀지 말고."
-            ),
-            "additionalContext": (
-                f"[claude-sync] 최신 미반영 아카이브: {archive_name} (마커파일: {MARKER_FILE})"
-            )
-        }
-    }))
 
 
 if __name__ == "__main__":
@@ -199,16 +109,16 @@ if __name__ == "__main__":
 '''
 
 
-def render(template, repo_root, project_name, cloud_dir):
+def render(template, repo_root, project_name, remote):
     return (
         template
         .replace("__REPO_ROOT__", repo_root)
         .replace("__PROJECT_NAME__", project_name)
-        .replace("__CLOUD_DIR__", cloud_dir)
+        .replace("__REMOTE__", remote)
     )
 
 
-def merge_hooks(settings_path, end_script, start_script):
+def merge_hooks(settings_path, end_script):
     data = {}
     if settings_path.exists():
         data = json.loads(settings_path.read_text())
@@ -223,56 +133,58 @@ def merge_hooks(settings_path, end_script, start_script):
             ],
         }
     ]
-    data["hooks"]["SessionStart"] = [
-        {
-            "matcher": "startup",
-            "hooks": [
-                {"type": "command", "command": f"{interp} {start_script}", "timeout": 10}
-            ],
-        }
-    ]
+    # Drop the import-nudge hook a previous version of this skill installed.
+    stale = data["hooks"].get("SessionStart") or []
+    kept = [e for e in stale
+            if not any("session-start-check.py" in (h.get("command") or "")
+                       for h in e.get("hooks", []))]
+    if kept:
+        data["hooks"]["SessionStart"] = kept
+    else:
+        data["hooks"].pop("SessionStart", None)
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    return len(stale) - len(kept)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True, help="Absolute path to the project repo root")
-    ap.add_argument("--cloud-dir", required=True, help="Base cloud-drive folder (e.g. iCloud Drive root)")
+    ap.add_argument("--remote", default="gdrive:claude-sync",
+                    help="rclone remote + base path (default: gdrive:claude-sync)")
     ap.add_argument("--project-name", default=None, help="Defaults to the repo directory's basename")
-    ap.add_argument("--no-subdir", action="store_true",
-                    help="Use --cloud-dir verbatim as the project's cloud folder "
-                         "(default appends claude-sync-<project> for per-project isolation)")
     args = ap.parse_args()
 
     repo_root = str(Path(args.repo).resolve())
     project_name = args.project_name or Path(repo_root).name
-    cloud_dir = (str(Path(args.cloud_dir)) if args.no_subdir
-                 else str(Path(args.cloud_dir) / f"claude-sync-{project_name}"))
-
-    Path(cloud_dir).mkdir(parents=True, exist_ok=True)
 
     hooks_dir = Path(repo_root) / ".claude" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     end_script = hooks_dir / "session-end-sync.py"
-    start_script = hooks_dir / "session-start-check.py"
-    end_script.write_text(render(SESSION_END_TEMPLATE, repo_root, project_name, cloud_dir))
-    start_script.write_text(render(SESSION_START_TEMPLATE, repo_root, project_name, cloud_dir))
+    end_script.write_text(render(SESSION_END_TEMPLATE, repo_root, project_name, args.remote))
+
+    old = hooks_dir / "session-start-check.py"
+    if old.exists():
+        old.unlink()
 
     settings_path = Path(repo_root) / ".claude" / "settings.local.json"
-    merge_hooks(settings_path, end_script, start_script)
+    removed = merge_hooks(settings_path, end_script)
 
     print(f"done — project: {project_name}")
-    print(f"  repo:      {repo_root}")
-    print(f"  cloud dir: {cloud_dir}")
-    print(f"  hooks:     {end_script}")
-    print(f"             {start_script}")
-    print(f"  settings:  {settings_path}")
+    print(f"  repo:     {repo_root}")
+    print(f"  remote:   {args.remote}/{project_name}")
+    print(f"  hook:     {end_script}")
+    print(f"  settings: {settings_path}")
+    if removed or old.exists() is False and removed:
+        print(f"  removed stale SessionStart hook ({removed} entry)")
     print()
-    print("Add these paths to the project's .git/info/exclude if not already covered:")
-    print("  .claude/")
+    print("Pulling stays manual, on purpose:")
+    print(f"  python3 ~/.claude/claude-sync.py status --repo {repo_root}")
+    print(f"  python3 ~/.claude/claude-sync.py pull   --repo {repo_root}")
+    print()
+    print("Add .claude/ to the project's .git/info/exclude if not already covered.")
 
 
 if __name__ == "__main__":

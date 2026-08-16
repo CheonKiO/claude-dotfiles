@@ -13,8 +13,6 @@ different path (different username/drive), pass --new-repo-path to rewrite every
   different path:  python claude-import.py --new-repo-path /home/bob/work/S15P11A107
 """
 import argparse
-import collections
-import datetime
 import os
 import re
 import shutil
@@ -28,97 +26,8 @@ def path_to_slug(path):
     return SLUG_RE.sub("-", path)
 
 
-CHUNK = 1 << 20
-stats = collections.Counter()
-
-
-def _stamp():
-    return datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-
-
-def _identical(a: Path, b: Path):
-    if a.stat().st_size != b.stat().st_size:
-        return False
-    with a.open("rb") as fa, b.open("rb") as fb:
-        while True:
-            ca, cb = fa.read(CHUNK), fb.read(CHUNK)
-            if ca != cb:
-                return False
-            if not ca:
-                return True
-
-
-def _starts_with(bigger: Path, smaller: Path):
-    """True if bigger's first bytes are exactly smaller — i.e. bigger is smaller plus
-    appended content. Transcripts are append-only, so this proves the archive copy is a
-    strict superset and can safely replace the local one."""
-    left = smaller.stat().st_size
-    with bigger.open("rb") as fb, smaller.open("rb") as fs:
-        while left > 0:
-            n = min(CHUNK, left)
-            if fb.read(n) != fs.read(n):
-                return False
-            left -= n
-    return True
-
-
-def set_aside(src: Path, dst: Path, why: str):
-    """Never clobber a local file we can't prove is stale — drop the archive copy next to
-    it and let the user reconcile."""
-    alt = dst.with_name(f"{dst.name}.incoming-{_stamp()}")
-    shutil.copy2(src, alt)
-    stats["conflict"] += 1
-    print(f"   !! {why}: kept local {dst.name}, archive copy -> {alt.name}")
-
-
-def merge_file(src: Path, dst: Path):
-    if not dst.exists():
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-        stats["new"] += 1
-        print(f"   + {dst.name}")
-        return
-    if _identical(src, dst):
-        stats["same"] += 1
-        return
-    if dst.name == "MEMORY.md":
-        merge_memory_index(src, dst)
-        return
-    s, d = src.stat().st_size, dst.stat().st_size
-    if src.suffix == ".jsonl" and s > d and _starts_with(src, dst):
-        shutil.copy2(src, dst)          # archive continues where the local copy stops
-        stats["extended"] += 1
-        print(f"   ^ {dst.name}  (+{(s - d) // 1024}KB)")
-        return
-    if src.suffix == ".jsonl" and d >= s and _starts_with(dst, src):
-        stats["local-newer"] += 1        # local already contains the archive's content
-        return
-    set_aside(src, dst, "diverged" if src.suffix == ".jsonl" else "differs")
-
-
-def merge_memory_index(src: Path, dst: Path):
-    """MEMORY.md is a one-line-per-memory index edited on both machines, so union the
-    lines rather than picking a side."""
-    have = dst.read_text(encoding="utf-8").splitlines()
-    seen = set(have)
-    added = [ln for ln in src.read_text(encoding="utf-8").splitlines()
-             if ln.strip() and ln not in seen]
-    if not added:
-        stats["same"] += 1
-        return
-    body = have + ([""] if have and have[-1].strip() else []) + added
-    dst.write_text("\n".join(body) + "\n", encoding="utf-8")
-    stats["index-merged"] += 1
-    print(f"   ~ MEMORY.md  (+{len(added)}줄)")
-
-
-def merge_tree(src: Path, dst: Path):
-    """Additive merge: new files land, existing ones follow merge_file's rules, and
-    nothing local is ever deleted."""
-    for item in sorted(src.rglob("*")):
-        if item.is_dir():
-            continue
-        merge_file(item, dst / item.relative_to(src))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from claude_sync_merge import merge_tree, stats, summary  # noqa: E402
 
 
 def main():
@@ -188,9 +97,7 @@ def main():
         shutil.copy2(stamp_file, Path.home() / ".claude-sync-imported")
 
     print()
-    print(f"merge complete — new {stats['new']}, extended {stats['extended']}, "
-          f"unchanged {stats['same']}, local-newer {stats['local-newer']}, "
-          f"index-merged {stats['index-merged']}, conflicts {stats['conflict']}")
+    print(f"merge complete — {summary()}")
     if stats["conflict"]:
         print("   review the .incoming-* files: nothing local was overwritten.")
     print()

@@ -145,6 +145,8 @@ def main():
     copy_tree("hooks")
     copy_file("claude-export.py")
     copy_file("claude-import.py")
+    copy_file("claude-sync.py")
+    copy_file("claude_sync_merge.py")
     copy_file("statusline.py")
     copy_file("install-plugins.py")
     copy_file("plugins.manifest.json")
