@@ -149,11 +149,23 @@ def cmd_push(args, claude_dir, repo_root, project):
             errors.append(f"{label}: {tail[-1] if tail else 'rclone failed'}")
             print(f"   !! {errors[-1]}")
 
-    for s in slugs:
-        send(s, f"{base}/projects/{s.name}", f"projects/{s.name}")
-    private = Path(repo_root) / "private"
-    if private.is_dir():
-        send(private, f"{base}/private", "private/")
+    # Snapshot before uploading. A live session appends to its transcript continuously, so
+    # uploading the file in place races the writer: rclone hashes it, uploads, then fails
+    # the post-transfer check because the local file grew underneath it ("corrupted on
+    # transfer: md5 hashes differ"). Copying locally first costs a fraction of a second and
+    # makes the upload source immutable.
+    with tempfile.TemporaryDirectory() as tmp:
+        stage = Path(tmp)
+        for s in slugs:
+            snap = stage / "projects" / s.name
+            shutil.copytree(s, snap)
+            send(snap, f"{base}/projects/{s.name}", f"projects/{s.name}")
+
+        private = Path(repo_root) / "private"
+        if private.is_dir():
+            snap = stage / "private"
+            shutil.copytree(private, snap)
+            send(snap, f"{base}/private", "private/")
 
     if errors:
         write_state(project, push={"state": "failed", "at": now_iso(),
