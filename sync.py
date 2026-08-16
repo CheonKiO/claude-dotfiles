@@ -106,6 +106,24 @@ def merge_permissions():
     print(f"merged {added} permission allow rule(s)")
 
 
+def merge_general_settings():
+    """Force this repo's curated top-level settings keys onto every machine. These are
+    policy values that must not drift per-machine — cleanupPeriodDays especially: leaving
+    it at the built-in 30-day default let the startup sweep delete ~73M of session
+    transcripts on 2026-08-16, unrecoverably. Overwrites rather than fills-if-absent so a
+    machine sitting on a wrong value gets corrected, not just an unset one."""
+    frag_path = REPO_DIR / "general.settings.json"
+    if not frag_path.exists():
+        return
+    curated = json.loads(frag_path.read_text())
+    settings_path = CLAUDE_DIR / "settings.json"
+    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    for key, value in curated.items():
+        settings[key] = value
+    settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+    print(f"merged {len(curated)} general setting(s): {', '.join(curated)}")
+
+
 def register_statusline():
     """Point settings.json statusLine at the deployed statusline.py with this OS's
     interpreter. Derived per-machine (not synced), so capture.py leaves it alone."""
@@ -135,6 +153,7 @@ def main():
     merge_hooks()
     register_statusline()
     merge_permissions()
+    merge_general_settings()
     print(f"done → {CLAUDE_DIR}")
 
 
