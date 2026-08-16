@@ -10,9 +10,25 @@ Replaces the tar.gz export/import pair for day-to-day use. Three reasons:
     everywhere after a one-byte edit, so every session end re-uploaded the whole archive.
   * No archive means no size ceiling and no pruning, so a 67M transcript is a non-issue.
 
-  claude-sync.py push   --repo PATH [--remote gdrive:claude-sync]
-  claude-sync.py pull   --repo PATH [--remote ...] [--new-repo-path PATH]
-  claude-sync.py status --repo PATH [--remote ...]
+Slug canonicalization
+  Claude Code derives a project's slug from the *resolved* working directory, so the same
+  project on two machines (/home/kio/omok vs /Users/me/Development/omok) gets two slugs and
+  the remote used to accumulate them side by side under projects/<slug>/ — they never
+  converged and `resume` on each machine only saw its own. Now every machine reads and
+  writes ONE remote dir, <base>/sessions/, in which the repo-root path is stored as the
+  token __CLAUDE_PROJECT_ROOT__ (machine-neutral, same idiom as the repo's __PY__ hook
+  token). push tokenizes local -> token and unions into the remote; pull detokenizes
+  token -> this machine's repo root and merges into the local slug. Tokenized both sides
+  means identical checksums across machines, so nothing re-uploads on every sync.
+
+  claude-sync.py push    --repo PATH [--remote gdrive:claude-sync]
+  claude-sync.py pull    --repo PATH [--remote ...] [--new-repo-path PATH]
+  claude-sync.py status  --repo PATH [--remote ...]
+  claude-sync.py migrate --repo PATH [--remote ...]   # one-time: old projects/<slug> -> sessions/
+
+A brand-new machine has no local slug dir yet (Claude's slug encoding is undocumented, and
+reversing it already bit us on the _ -> - mapping), so open Claude in the repo once to
+create the slug, then pull.
 
 Pull never overwrites blindly: it stages the remote locally, then merges with
 claude_sync_merge (append-only proof required to replace, conflicts set aside).
@@ -32,6 +48,7 @@ from claude_sync_merge import merge_tree, summary  # noqa: E402
 
 DEFAULT_REMOTE = "gdrive:claude-sync"
 CWD_PROBE_LINES = 40
+CWD_TOKEN = "__CLAUDE_PROJECT_ROOT__"
 STATE_DIR = Path.home() / ".claude" / "sync-state"
 
 
@@ -123,12 +140,48 @@ def find_slugs(claude_dir: Path, repo_root: str):
     return hits
 
 
+def native_slug(claude_dir: Path, repo_root: str):
+    """The local slug dir whose sessions were recorded exactly at repo_root (the one Claude
+    writes to when launched here). Prefers an exact cwd match; falls back to any slug under
+    repo_root; None if this machine has never opened Claude in the repo."""
+    slugs = find_slugs(claude_dir, repo_root)
+    for s in slugs:
+        if repo_root in slug_cwds(s):
+            return s
+    return slugs[0] if slugs else None
+
+
 def remote_base(remote, project):
     return f"{remote.rstrip('/')}/{project}"
 
 
+def sessions_remote(base):
+    return f"{base}/sessions"
+
+
+def rewrite_paths(root: Path, frm: str, to: str):
+    """Rewrite frm -> to inside every *.jsonl / *.json under root, in place. Used to swap
+    the repo-root path for the machine-neutral token (push) and back (pull)."""
+    for f in root.rglob("*"):
+        if f.is_file() and f.suffix in (".jsonl", ".json"):
+            try:
+                txt = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if frm in txt:
+                f.write_text(txt.replace(frm, to), encoding="utf-8")
+
+
+def rclone_copy(src, dst, allow_missing_src=False):
+    r = run(["rclone", "copy", str(src), str(dst), "--checksum", "--transfers", "4"])
+    if r.returncode != 0 and allow_missing_src and "directory not found" in (r.stderr or ""):
+        return None                       # remote dir does not exist yet — treat as empty
+    return r
+
+
 def cmd_push(args, claude_dir, repo_root, project):
     base = remote_base(args.remote, project)
+    sess = sessions_remote(base)
     write_state(project, repo=repo_root, remote=args.remote,
                 push={"state": "running", "at": now_iso()})
 
@@ -138,34 +191,38 @@ def cmd_push(args, claude_dir, repo_root, project):
                                    "error": f"no slug records {repo_root}"})
         sys.exit(f"!! no slug under {claude_dir/'projects'} records {repo_root}")
 
-    print(f">> push {project} -> {base}")
+    print(f">> push {project} -> {sess}")
     errors = []
-
-    def send(src, dst, label):
-        print(f"   {label}")
-        r = run(["rclone", "copy", str(src), dst, "--checksum", "--transfers", "4"])
-        if r.returncode != 0:
-            tail = r.stderr.strip().splitlines()
-            errors.append(f"{label}: {tail[-1] if tail else 'rclone failed'}")
-            print(f"   !! {errors[-1]}")
-
-    # Snapshot before uploading. A live session appends to its transcript continuously, so
-    # uploading the file in place races the writer: rclone hashes it, uploads, then fails
-    # the post-transfer check because the local file grew underneath it ("corrupted on
-    # transfer: md5 hashes differ"). Copying locally first costs a fraction of a second and
-    # makes the upload source immutable.
     with tempfile.TemporaryDirectory() as tmp:
-        stage = Path(tmp)
+        tmp = Path(tmp)
+        # Consolidate every local slug for this project into one staging dir, then swap this
+        # machine's repo-root path for the neutral token. Snapshotting into a temp dir also
+        # makes the upload source immutable while a live session keeps appending.
+        local = tmp / "local"
+        local.mkdir()
         for s in slugs:
-            snap = stage / "projects" / s.name
-            shutil.copytree(s, snap)
-            send(snap, f"{base}/projects/{s.name}", f"projects/{s.name}")
+            merge_tree(s, local)
+        rewrite_paths(local, repo_root, CWD_TOKEN)
+
+        # Union with whatever the remote already holds so a push never drops another
+        # machine's sessions or memory lines, then upload the union.
+        remote = tmp / "remote"
+        remote.mkdir()
+        rclone_copy(sess, remote, allow_missing_src=True)
+        merge_tree(local, remote)
+        up = rclone_copy(remote, sess)
+        if up is not None and up.returncode != 0:
+            tail = (up.stderr or "").strip().splitlines()
+            errors.append(f"sessions: {tail[-1] if tail else 'rclone failed'}")
 
         private = Path(repo_root) / "private"
         if private.is_dir():
-            snap = stage / "private"
+            snap = tmp / "private"
             shutil.copytree(private, snap)
-            send(snap, f"{base}/private", "private/")
+            rp = rclone_copy(snap, f"{base}/private")
+            if rp is not None and rp.returncode != 0:
+                tail = (rp.stderr or "").strip().splitlines()
+                errors.append(f"private: {tail[-1] if tail else 'rclone failed'}")
 
     if errors:
         write_state(project, push={"state": "failed", "at": now_iso(),
@@ -174,43 +231,80 @@ def cmd_push(args, claude_dir, repo_root, project):
 
     newest = remote_newest(base)
     write_state(project, push={"state": "ok", "at": now_iso()},
-                seen=newest or "", remote_newest=newest or "",
-                remote_checked=now_iso())
+                seen=newest or "", remote_newest=newest or "", remote_checked=now_iso())
     print("push complete — verified on the remote")
 
 
 def cmd_pull(args, claude_dir, repo_root, project):
     base = remote_base(args.remote, project)
-    print(f">> pull {base}")
+    sess = sessions_remote(base)
+    target = native_slug(claude_dir, repo_root)
+    if target is None:
+        sys.exit(f"!! no local slug records {repo_root} yet — open Claude in the repo once "
+                 f"to create it, then pull")
+
+    print(f">> pull {sess} -> {target.name}")
     with tempfile.TemporaryDirectory() as tmp:
-        stage = Path(tmp) / "remote"
-        r = run(["rclone", "copy", base, str(stage), "--checksum", "--transfers", "4"])
-        if r.returncode != 0:
-            sys.exit(f"!! rclone copy failed: {r.stderr.strip()[-300:]}")
+        tmp = Path(tmp)
+        stage = tmp / "sessions"
+        stage.mkdir()
+        r = rclone_copy(sess, stage, allow_missing_src=True)
+        if r is not None and r.returncode != 0:
+            sys.exit(f"!! rclone copy failed: {(r.stderr or '').strip()[-300:]}")
+        # Localize the neutral token to this machine's path, then merge into the local slug.
+        rewrite_paths(stage, CWD_TOKEN, repo_root)
+        merge_tree(stage, target)
 
-        src_projects = stage / "projects"
-        if src_projects.is_dir():
-            for slug_dir in sorted(src_projects.iterdir()):
-                if not slug_dir.is_dir():
-                    continue
-                dest = claude_dir / "projects" / slug_dir.name
-                print(f">> merge: {slug_dir.name}")
-                merge_tree(slug_dir, dest)
-
-        src_private = stage / "private"
-        if src_private.is_dir():
-            dest_repo = Path(args.new_repo_path or repo_root)
+        priv = tmp / "private"
+        priv.mkdir()
+        rclone_copy(f"{base}/private", priv, allow_missing_src=True)
+        dest_repo = Path(args.new_repo_path or repo_root)
+        if any(priv.iterdir()):
             if dest_repo.is_dir():
                 print(f">> private/ -> {dest_repo / 'private'}")
-                merge_tree(src_private, dest_repo / "private")
+                merge_tree(priv, dest_repo / "private")
             else:
                 print(f"!! {dest_repo} missing — skipped private/", file=sys.stderr)
 
     newest = remote_newest(base)
     write_state(project, repo=repo_root, remote=args.remote,
-                seen=newest or "", remote_newest=newest or "",
-                remote_checked=now_iso())
+                seen=newest or "", remote_newest=newest or "", remote_checked=now_iso())
     print(f"\npull complete — {summary()}")
+
+
+def cmd_migrate(args, claude_dir, repo_root, project):
+    """One-time: fold the old per-machine projects/<slug>/ dirs into the canonical
+    sessions/ dir, tokenizing each slug's literal repo path. Leaves the old dirs in place;
+    delete them by hand once the result is verified."""
+    base = remote_base(args.remote, project)
+    sess = sessions_remote(base)
+    old = f"{base}/projects"
+    r = run(["rclone", "lsf", old, "--dirs-only"])
+    if r.returncode != 0:
+        sys.exit(f"nothing to migrate — no {old}")
+    dirs = [d.strip().rstrip("/") for d in r.stdout.splitlines() if d.strip()]
+    if not dirs:
+        sys.exit(f"nothing to migrate — {old} is empty")
+
+    print(f">> migrate {len(dirs)} slug(s) -> {sess}")
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        union = tmp / "union"
+        union.mkdir()
+        rclone_copy(sess, union, allow_missing_src=True)      # seed with any existing canonical
+        for d in dirs:
+            dl = tmp / d
+            dl.mkdir()
+            rclone_copy(f"{old}/{d}", dl)
+            for cwd in slug_cwds(dl):                         # each old slug carries a literal cwd
+                rewrite_paths(dl, cwd, CWD_TOKEN)
+            merge_tree(dl, union)
+            print(f"   folded {d}")
+        up = rclone_copy(union, sess)
+        if up is not None and up.returncode != 0:
+            sys.exit(f"!! upload failed: {(up.stderr or '').strip()[-300:]}")
+    print(f"migrated -> {sess}. verify, then delete the old dir with:\n"
+          f"   rclone purge {old}")
 
 
 def remote_newest(base):
@@ -259,7 +353,7 @@ def cmd_status(args, claude_dir, repo_root, project):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=("push", "pull", "status", "refresh"))
+    ap.add_argument("action", choices=("push", "pull", "status", "refresh", "migrate"))
     ap.add_argument("--repo", default=os.environ.get("REPO_ROOT"), required=False)
     ap.add_argument("--project-name", default=os.environ.get("PROJECT_NAME"))
     ap.add_argument("--remote", default=os.environ.get("SYNC_REMOTE", DEFAULT_REMOTE))
@@ -282,7 +376,7 @@ def main():
     project = args.project_name or Path(repo_root).name
 
     {"push": cmd_push, "pull": cmd_pull, "status": cmd_status,
-     "refresh": cmd_refresh}[args.action](args, claude_dir, repo_root, project)
+     "refresh": cmd_refresh, "migrate": cmd_migrate}[args.action](args, claude_dir, repo_root, project)
 
 
 if __name__ == "__main__":

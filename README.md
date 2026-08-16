@@ -76,11 +76,30 @@ python3 ~/.claude/claude-sync.py pull   --repo /path/to/project   # 병합해서
 #   새 머신서 경로 다르면: --new-repo-path /new/path
 ```
 
+### slug 정규화 — 여러 머신이 한 프로젝트로 수렴
+
+Claude Code는 slug를 **실제(심볼릭 해제) cwd**로 만듦(심볼릭 링크서 실행해도 물리경로 slug로 감 — 검증됨). 그래서 같은 프로젝트라도 머신마다 절대경로가 다르면(`/home/kio/omok` vs `/Users/me/Development/omok`) slug가 갈리고, 예전엔 원격에 `projects/<slug>` 두 폴더로 **따로 쌓이기만** 해서 resume이 각자 것만 봤음.
+
+이제 모든 머신이 **원격 한 폴더 `<base>/sessions/`**를 읽고 씀. 그 안 transcript의 repo 루트 경로는 토큰 `__CLAUDE_PROJECT_ROOT__`로 저장(머신 중립, `__PY__` 훅 토큰과 같은 방식):
+
+- **push**: 로컬 slug들 병합 → 로컬경로를 토큰으로 치환 → 원격 sessions와 union → 업로드.
+- **pull**: 원격 sessions 받음 → 토큰을 **이 머신 경로로** 치환 → 로컬 slug에 merge.
+- 양쪽 다 토큰이라 머신 간 checksum 동일 → 매 sync마다 재업로드(churn) 없음. 결과: 로컬 한 slug에 전 머신 세션 + memory union → resume에 다 뜸.
+
+**새 머신 주의**: 로컬 slug 폴더가 아직 없으면(Claude slug 인코딩은 비공개) pull이 거부함 — repo에서 Claude 한 번 열어 slug 만든 뒤 pull.
+
+옛 `projects/<slug>` 레이아웃을 쓰던 원격은 1회 정규화:
+```bash
+python3 ~/.claude/claude-sync.py migrate --repo /path/to/project   # projects/<slug> → sessions/ (비파괴적)
+# 결과 확인 후: rclone purge <remote>/<project>/projects
+```
+
 ### 준비물 (새 머신)
 
 - **rclone 설치** — 직접 업로드가 아니라 API 요청 방식이라 필수.
   - macOS `brew install rclone` / Linux `sudo apt install rclone` 또는 `curl https://rclone.org/install.sh | sudo bash` / Windows `winget install Rclone.Rclone`
 - **원격 설정** — `rclone config`로 Google Drive 등 remote 하나 잡기(기본 이름 `gdrive:claude-sync`).
+- **repo서 Claude 한 번 실행** — 로컬 slug 폴더 생성용(첫 pull 전제).
 - 프로젝트에 훅 설치: `python3 skills/project-sync-setup/setup.py --repo /path/to/project [--remote gdrive:claude-sync]`
 
 ---
@@ -123,7 +142,7 @@ python3 install-plugins.py # (선택) 플러그인까지 재설치
 | `sync.py` | repo → `~/.claude` | 설정 설치. CLAUDE.md·스킬·훅·statusline·`claude-sync.py` 복사 + 훅/권한/일반설정 병합 + 상태줄 등록 |
 | `capture.py` | `~/.claude` → repo | 반대 방향. 로컬에서 직접 고친 설정을 저장소로 되끌어옴 (커밋 전에 실행). `memory/`·`projects/`·`credentials`는 안 건드림 |
 | `install-plugins.py` | — | `plugins.manifest.json` 기준으로 마켓플레이스 추가 + 플러그인 설치 (`claude` CLI 구동, 멱등) |
-| `claude-sync.py` | 프로젝트 ↔ rclone 원격 | **일상 세션 sync.** `push`/`pull`/`status`/`refresh`. push는 SessionEnd 훅이 `--detach`로 자동 호출, pull은 수동·merge 기반 |
+| `claude-sync.py` | 프로젝트 ↔ rclone 원격 | **일상 세션 sync.** `push`/`pull`/`status`/`refresh`/`migrate`. 원격 단일 `sessions/` 폴더에 cwd 토큰 정규화 → 여러 머신 한 slug로 수렴. push는 SessionEnd 훅이 `--detach`로 자동, pull은 수동·merge |
 | `claude_sync_merge.py` | — | `claude-sync.py pull`·`claude-import.py`가 공유하는 병합 로직 (prefix 증명 후 교체, 충돌은 `.incoming`으로 세이브, 삭제 없음) |
 | `claude-export.py` (레거시) | — | 한 프로젝트를 `.tar.gz` 한 덩이로 묶기 (일회성 이관용, 토큰·타 프로젝트 제외). 일상은 `claude-sync.py` |
 | `claude-import.py` (레거시) | — | 위 아카이브를 이 머신 `~/.claude`에 병합해 풀기 (`claude_sync_merge` 사용, 추출 폴더서도 실행 가능) |
