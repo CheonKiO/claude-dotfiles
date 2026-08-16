@@ -224,6 +224,17 @@ def cmd_push(args, claude_dir, repo_root, project):
                 tail = (rp.stderr or "").strip().splitlines()
                 errors.append(f"private: {tail[-1] if tail else 'rclone failed'}")
 
+        # .ua = understand-anything knowledge graph. Expensive to regenerate
+        # (full scan + LLM), so we mirror it like private/ rather than rebuild per machine.
+        ua = Path(repo_root) / ".ua"
+        if ua.is_dir():
+            snap = tmp / "ua"
+            shutil.copytree(ua, snap)
+            ru = rclone_copy(snap, f"{base}/ua")
+            if ru is not None and ru.returncode != 0:
+                tail = (ru.stderr or "").strip().splitlines()
+                errors.append(f".ua: {tail[-1] if tail else 'rclone failed'}")
+
     if errors:
         write_state(project, push={"state": "failed", "at": now_iso(),
                                    "error": "; ".join(errors)[:400]})
@@ -265,6 +276,16 @@ def cmd_pull(args, claude_dir, repo_root, project):
                 merge_tree(priv, dest_repo / "private")
             else:
                 print(f"!! {dest_repo} missing — skipped private/", file=sys.stderr)
+
+        ua = tmp / "ua"
+        ua.mkdir()
+        rclone_copy(f"{base}/ua", ua, allow_missing_src=True)
+        if any(ua.iterdir()):
+            if dest_repo.is_dir():
+                print(f">> .ua/ -> {dest_repo / '.ua'}")
+                merge_tree(ua, dest_repo / ".ua")
+            else:
+                print(f"!! {dest_repo} missing — skipped .ua/", file=sys.stderr)
 
     newest = remote_newest(base)
     write_state(project, repo=repo_root, remote=args.remote,
