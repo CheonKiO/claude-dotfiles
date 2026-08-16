@@ -141,12 +141,16 @@ def main():
             print(">> .git/info/exclude (local gitignore rules)")
             shutil.copy2(exclude, root / "git-info-exclude.txt")
 
-        importer = Path(__file__).resolve().parent / "claude-import.py"
-        if importer.is_file():
-            shutil.copy2(importer, root / "claude-import.py")
-        else:
-            print(f"!! warning: claude-import.py not found next to this script "
-                  f"({importer}); archive won't be self-unpacking", file=sys.stderr)
+        # Ship the importer AND the merge module it imports — an archive that unpacks to a
+        # ModuleNotFoundError is not self-unpacking.
+        here = Path(__file__).resolve().parent
+        for name in ("claude-import.py", "claude_sync_merge.py"):
+            src_file = here / name
+            if src_file.is_file():
+                shutil.copy2(src_file, root / name)
+            else:
+                print(f"!! warning: {name} not found next to this script ({here}); "
+                      f"archive won't be self-unpacking", file=sys.stderr)
 
         out_dir.mkdir(parents=True, exist_ok=True)
         print(">> compressing...")

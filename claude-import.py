@@ -26,8 +26,15 @@ def path_to_slug(path):
     return SLUG_RE.sub("-", path)
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claude_sync_merge import merge_tree, stats, summary  # noqa: E402
+# The merge module normally sits beside this script, both inside the archive and in
+# ~/.claude. Archives written before it existed carry only the importer, so fall back to
+# the deployed copy rather than dying on ModuleNotFoundError.
+sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path.home() / ".claude")]
+try:
+    from claude_sync_merge import merge_tree, stats, summary  # noqa: E402
+except ModuleNotFoundError:
+    sys.exit("!! claude_sync_merge.py not found beside this script or in ~/.claude — "
+             "run this dotfiles repo's sync.py first")
 
 
 def main():
