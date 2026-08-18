@@ -47,6 +47,16 @@
             "timeout": 35
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__PY__ -c \"import pathlib; exec(open(str(pathlib.Path.home()/'.claude'/'hooks'/'pdf-to-text.py')).read())\"",
+            "timeout": 70
+          }
+        ]
       }
     ]
   }
