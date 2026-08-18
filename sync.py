@@ -16,7 +16,8 @@ CLAUDE_DIR = Path.home() / ".claude"
 PY_TOKEN = "__PY__"
 # Managed hooks this repo owns — matched by script basename so a prior version
 # (old hardcoded path or a different interpreter) is replaced, never duplicated.
-MANAGED_SCRIPTS = ("file-size-guard.py", "git-fetch-guard.py", "notify.sh")
+MANAGED_SCRIPTS = ("file-size-guard.py", "git-fetch-guard.py", "notify.sh",
+                   "session-end-sync.py")
 
 
 def detect_python():
@@ -148,6 +149,7 @@ def main():
     copy_file("claude-import.py")
     copy_file("claude-sync.py")
     copy_file("claude_sync_merge.py")
+    copy_file("sync-projects.json")
     copy_file("statusline.py")
     copy_file("install-plugins.py")
     copy_file("plugins.manifest.json")

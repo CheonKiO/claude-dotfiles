@@ -1,5 +1,18 @@
 {
   "hooks": {
+    "SessionEnd": [
+      {
+        "matcher": "prompt_input_exit|logout|other",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__PY__ -c \"import pathlib; exec(open(str(pathlib.Path.home()/'.claude'/'hooks'/'session-end-sync.py')).read())\"",
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "hooks": [
