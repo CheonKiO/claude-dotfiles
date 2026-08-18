@@ -274,6 +274,11 @@ def cmd_push(args, claude_dir, repo_root, project):
         remote = cache_dir(project, "sessions")
         rclone_copy(sess, remote, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
         merge_tree(local, remote)
+        # merge_tree sets a diverged file aside as .incoming inside the cache. They are excluded
+        # from the upload, but in this persistent cache they would otherwise pile up every push
+        # (the cross-platform path residue makes a few files diverge on every run), so drop them.
+        for junk in remote.rglob("*.incoming-*"):
+            junk.unlink()
         up = rclone_copy(remote, sess, excludes=EXCLUDE_INCOMING)
         if up is not None and up.returncode != 0:
             tail = (up.stderr or "").strip().splitlines()
