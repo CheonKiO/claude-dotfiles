@@ -50,6 +50,11 @@ DEFAULT_REMOTE = "gdrive:claude-sync"
 CWD_PROBE_LINES = 40
 CWD_TOKEN = "__CLAUDE_PROJECT_ROOT__"
 STATE_DIR = Path.home() / ".claude" / "sync-state"
+CACHE_DIR = Path.home() / ".claude" / "sync-cache"
+# Merge-conflict copies are local review artifacts (see claude_sync_merge.set_aside). They
+# must never ride the wire: uploading them propagates one machine's conflict to every other,
+# and pulling the remote's stale ones re-litters a slug that was just cleaned.
+EXCLUDE_INCOMING = ["*.incoming-*"]
 
 
 def run(args, **kw):
@@ -58,6 +63,16 @@ def run(args, **kw):
 
 def state_path(project):
     return STATE_DIR / f"{project}.json"
+
+
+def cache_dir(project, sub):
+    """Persistent per-project mirror of a remote subtree, kept byte-identical to the remote
+    (neutral-token form for sessions) so rclone --checksum transfers only changed files instead
+    of re-downloading the whole tree into a fresh tempdir every sync. Never detokenize this dir
+    in place — that breaks checksum parity and forces a full re-download; detokenize a copy."""
+    d = CACHE_DIR / project / sub
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def read_state(project):
@@ -172,8 +187,12 @@ def rewrite_paths(root: Path, frm: str, to: str):
                 f.write_text(txt.replace(frm, to), encoding="utf-8")
 
 
-def rclone_copy(src, dst, allow_missing_src=False):
-    r = run(["rclone", "copy", str(src), str(dst), "--checksum", "--transfers", "4"])
+def rclone_copy(src, dst, allow_missing_src=False, excludes=()):
+    cmd = ["rclone", "copy", str(src), str(dst), "--checksum", "--transfers", "4",
+           "--checkers", "8", "--fast-list"]
+    for pat in excludes:
+        cmd += ["--exclude", pat]
+    r = run(cmd)
     if r.returncode != 0 and allow_missing_src and "directory not found" in (r.stderr or ""):
         return None                       # remote dir does not exist yet — treat as empty
     return r
@@ -205,12 +224,14 @@ def cmd_push(args, claude_dir, repo_root, project):
         rewrite_paths(local, repo_root, CWD_TOKEN)
 
         # Union with whatever the remote already holds so a push never drops another
-        # machine's sessions or memory lines, then upload the union.
-        remote = tmp / "remote"
-        remote.mkdir()
-        rclone_copy(sess, remote, allow_missing_src=True)
+        # machine's sessions or memory lines, then upload the union. The remote mirror is the
+        # persistent cache (not a fresh tempdir), so this download is incremental — only files
+        # another machine changed come down. .incoming-* conflict copies are excluded from the
+        # upload so they never propagate off this machine.
+        remote = cache_dir(project, "sessions")
+        rclone_copy(sess, remote, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
         merge_tree(local, remote)
-        up = rclone_copy(remote, sess)
+        up = rclone_copy(remote, sess, excludes=EXCLUDE_INCOMING)
         if up is not None and up.returncode != 0:
             tail = (up.stderr or "").strip().splitlines()
             errors.append(f"sessions: {tail[-1] if tail else 'rclone failed'}")
@@ -254,38 +275,54 @@ def cmd_pull(args, claude_dir, repo_root, project):
         sys.exit(f"!! no local slug records {repo_root} yet — open Claude in the repo once "
                  f"to create it, then pull")
 
+    # Fast path: if the remote is no newer than what we last recorded and the local cache is
+    # already populated (so a prior pull merged that state), there is nothing to merge — skip
+    # the whole copy+detokenize+merge, which otherwise runs full every time even for 0 changes.
+    # One lsjson listing decides it. --force overrides. Also silences the per-pull cross-platform
+    # .incoming churn on unchanged remotes.
+    newest = remote_newest(base)
+    seen = read_state(project).get("seen", "")
+    if not args.force and newest and seen and newest <= seen \
+            and any(cache_dir(project, "sessions").iterdir()):
+        write_state(project, repo=repo_root, remote=args.remote,
+                    remote_newest=newest, remote_checked=now_iso())
+        print(f">> pull {sess}: remote up to date (newest {newest} <= seen {seen}) — skipped")
+        return
+
     print(f">> pull {sess} -> {target.name}")
+    dest_repo = Path(args.new_repo_path or repo_root)
+    # Persistent caches make each rclone download incremental. Sessions are stored tokenized
+    # (like the remote), so detokenize a throwaway copy rather than the cache itself — mutating
+    # the cache would break checksum parity and re-download everything next time. private/ and
+    # .ua/ carry no token, so they merge straight from cache. .incoming-* conflict copies are
+    # excluded so the remote's stale ones never re-enter a slug that was already cleaned.
+    csess = cache_dir(project, "sessions")
+    r = rclone_copy(sess, csess, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
+    if r is not None and r.returncode != 0:
+        sys.exit(f"!! rclone copy failed: {(r.stderr or '').strip()[-300:]}")
     with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
-        stage = tmp / "sessions"
-        stage.mkdir()
-        r = rclone_copy(sess, stage, allow_missing_src=True)
-        if r is not None and r.returncode != 0:
-            sys.exit(f"!! rclone copy failed: {(r.stderr or '').strip()[-300:]}")
-        # Localize the neutral token to this machine's path, then merge into the local slug.
+        stage = Path(tmp) / "sessions"
+        shutil.copytree(csess, stage)
         rewrite_paths(stage, CWD_TOKEN, repo_root)
         merge_tree(stage, target)
 
-        priv = tmp / "private"
-        priv.mkdir()
-        rclone_copy(f"{base}/private", priv, allow_missing_src=True)
-        dest_repo = Path(args.new_repo_path or repo_root)
-        if any(priv.iterdir()):
-            if dest_repo.is_dir():
-                print(f">> private/ -> {dest_repo / 'private'}")
-                merge_tree(priv, dest_repo / "private")
-            else:
-                print(f"!! {dest_repo} missing — skipped private/", file=sys.stderr)
+    cpriv = cache_dir(project, "private")
+    rclone_copy(f"{base}/private", cpriv, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
+    if any(cpriv.iterdir()):
+        if dest_repo.is_dir():
+            print(f">> private/ -> {dest_repo / 'private'}")
+            merge_tree(cpriv, dest_repo / "private")
+        else:
+            print(f"!! {dest_repo} missing — skipped private/", file=sys.stderr)
 
-        ua = tmp / "ua"
-        ua.mkdir()
-        rclone_copy(f"{base}/ua", ua, allow_missing_src=True)
-        if any(ua.iterdir()):
-            if dest_repo.is_dir():
-                print(f">> .ua/ -> {dest_repo / '.ua'}")
-                merge_tree(ua, dest_repo / ".ua")
-            else:
-                print(f"!! {dest_repo} missing — skipped .ua/", file=sys.stderr)
+    cua = cache_dir(project, "ua")
+    rclone_copy(f"{base}/ua", cua, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
+    if any(cua.iterdir()):
+        if dest_repo.is_dir():
+            print(f">> .ua/ -> {dest_repo / '.ua'}")
+            merge_tree(cua, dest_repo / ".ua")
+        else:
+            print(f"!! {dest_repo} missing — skipped .ua/", file=sys.stderr)
 
     newest = remote_newest(base)
     write_state(project, repo=repo_root, remote=args.remote,
@@ -332,7 +369,7 @@ def remote_newest(base):
     """Newest mtime on the remote, as an ISO string, or None. Used as the marker both
     push and pull record so the statusline can tell 'remote has something we have not
     taken' from 'remote is our own last push'."""
-    r = run(["rclone", "lsjson", base, "--recursive", "--files-only"])
+    r = run(["rclone", "lsjson", base, "--recursive", "--files-only", "--fast-list"])
     if r.returncode != 0:
         return None
     try:
@@ -382,6 +419,8 @@ def main():
                     help="pull only: where private/ should land on this machine")
     ap.add_argument("--detach", action="store_true",
                     help="run in the background and return immediately (for hooks)")
+    ap.add_argument("--force", action="store_true",
+                    help="pull only: bypass the up-to-date fast path and merge anyway")
     args = ap.parse_args()
 
     if not args.repo:
