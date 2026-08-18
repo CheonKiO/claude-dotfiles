@@ -37,6 +37,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -187,6 +188,48 @@ def rewrite_paths(root: Path, frm: str, to: str):
                 f.write_text(txt.replace(frm, to), encoding="utf-8")
 
 
+_TS_RE = re.compile(rb'"timestamp":"([^"]+)"')
+
+
+def content_mtime(path, tail=65536):
+    """Epoch of the newest internal timestamp in a transcript, or None. Read only the tail —
+    session lines are appended, so the last few hold the latest stamp, and a 70M transcript
+    never needs a full read. Timestamps are ISO-8601 Z, comparable lexically."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - tail))
+            data = fh.read()
+    except OSError:
+        return None
+    stamps = _TS_RE.findall(data)
+    if not stamps:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(max(stamps).decode().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.timestamp()
+
+
+def stamp_sessions(root):
+    """Set each transcript's mtime to its newest internal timestamp so the resume list shows
+    real session time, not the sync time that rewrite_paths' rewrite would otherwise stamp.
+    Content-derived, so it self-heals files an earlier sync already clobbered. Returns count."""
+    n = 0
+    for f in Path(root).rglob("*.jsonl"):
+        ts = content_mtime(f)
+        if ts is None:
+            continue
+        try:
+            os.utime(f, (ts, ts))
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
 def rclone_copy(src, dst, allow_missing_src=False, excludes=()):
     cmd = ["rclone", "copy", str(src), str(dst), "--checksum", "--transfers", "4",
            "--checkers", "8", "--fast-list"]
@@ -305,6 +348,7 @@ def cmd_pull(args, claude_dir, repo_root, project):
         shutil.copytree(csess, stage)
         rewrite_paths(stage, CWD_TOKEN, repo_root)
         merge_tree(stage, target)
+    stamp_sessions(target)
 
     cpriv = cache_dir(project, "private")
     rclone_copy(f"{base}/private", cpriv, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
