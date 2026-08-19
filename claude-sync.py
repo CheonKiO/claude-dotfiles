@@ -230,49 +230,14 @@ def stamp_sessions(root):
     return n
 
 
-def rclone_copy(src, dst, allow_missing_src=False, excludes=(), backup_dir=None):
+def rclone_copy(src, dst, allow_missing_src=False, excludes=()):
     cmd = ["rclone", "copy", str(src), str(dst), "--checksum", "--transfers", "4",
            "--checkers", "8", "--fast-list"]
-    if backup_dir is not None:            # a file this copy would overwrite is parked here first
-        cmd += ["--backup-dir", str(backup_dir)]
     for pat in excludes:
         cmd += ["--exclude", pat]
     r = run(cmd)
     if r.returncode != 0 and allow_missing_src and "directory not found" in (r.stderr or ""):
         return None                       # remote dir does not exist yet — treat as empty
-    return r
-
-
-def rel_files(root: Path):
-    """Set of paths (relative to root) of every file under root, or empty if root is absent.
-    Used as the 'base' snapshot for the private/ three-way merge on pull."""
-    root = Path(root)
-    if not root.is_dir():
-        return set()
-    return {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
-
-
-def trash_stamp():
-    return datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-
-
-def rclone_sync(src, dst, backup_dir=None, allow_missing_src=False, excludes=()):
-    """Mirror src -> dst: add, update, and DELETE anything in dst that is absent from src, so
-    deletions, renames and moves propagate — unlike copy, which only ever adds (that additive
-    model is why zombies pile up). --track-renames turns a rename into a server-side move rather
-    than a re-upload. When backup_dir is given, every file sync would delete or overwrite is moved
-    there instead of being destroyed, so a mis-mirror stays recoverable. backup_dir must lie
-    OUTSIDE dst or rclone refuses. Used only for the curated private/ tree; sessions/ and .ua/
-    stay on copy/merge because every machine's transcripts and memory must accumulate, not mirror."""
-    cmd = ["rclone", "sync", str(src), str(dst), "--checksum", "--transfers", "4",
-           "--checkers", "8", "--fast-list", "--track-renames"]
-    if backup_dir is not None:
-        cmd += ["--backup-dir", str(backup_dir)]
-    for pat in excludes:
-        cmd += ["--exclude", pat]
-    r = run(cmd)
-    if r.returncode != 0 and allow_missing_src and "directory not found" in (r.stderr or ""):
-        return None                       # remote dir does not exist yet — nothing to mirror
     return r
 
 
@@ -319,20 +284,10 @@ def cmd_push(args, claude_dir, repo_root, project):
             tail = (up.stderr or "").strip().splitlines()
             errors.append(f"sessions: {tail[-1] if tail else 'rclone failed'}")
 
-        # private/ is a curated tree (docs the user renames, moves and deletes), so it MIRRORS
-        # rather than accumulates: sync makes the remote match the local snapshot exactly, which
-        # is the only way a delete or rename here reaches another machine. Anything the mirror
-        # would remove is parked under <remote>/.trash/<project>/<ts> (outside base, so it does
-        # not disturb remote_newest) instead of being destroyed.
-        private = Path(repo_root) / "private"
-        if private.is_dir():
-            snap = tmp / "private"
-            shutil.copytree(private, snap)
-            trash = f"{args.remote.rstrip('/')}/.trash/{project}/{trash_stamp()}"
-            rp = rclone_sync(snap, f"{base}/private", backup_dir=trash)
-            if rp is not None and rp.returncode != 0:
-                tail = (rp.stderr or "").strip().splitlines()
-                errors.append(f"private: {tail[-1] if tail else 'rclone failed'}")
+        # private/ is no longer synced here — it moved to its own git repo (~/claude-private,
+        # a GitHub private repo, symlinked into each project as private/). rclone's mirror-sync
+        # of private/ once deleted another machine's unpulled docs, so that whole path is gone;
+        # git handles private/ with real merges and history now. sessions/ and .ua/ stay on rclone.
 
         # .ua = understand-anything knowledge graph. Expensive to regenerate
         # (full scan + LLM), so we mirror it like private/ rather than rebuild per machine.
@@ -382,8 +337,8 @@ def cmd_pull(args, claude_dir, repo_root, project):
     dest_repo = Path(args.new_repo_path or repo_root)
     # Persistent caches make each rclone download incremental. Sessions are stored tokenized
     # (like the remote), so detokenize a throwaway copy rather than the cache itself — mutating
-    # the cache would break checksum parity and re-download everything next time. private/ and
-    # .ua/ carry no token, so they merge straight from cache. .incoming-* conflict copies are
+    # the cache would break checksum parity and re-download everything next time. .ua/ carries
+    # no token, so it merges straight from cache. .incoming-* conflict copies are
     # excluded so the remote's stale ones never re-enter a slug that was already cleaned.
     csess = cache_dir(project, "sessions")
     r = rclone_copy(sess, csess, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
@@ -396,36 +351,9 @@ def cmd_pull(args, claude_dir, repo_root, project):
         merge_tree(stage, target)
     stamp_sessions(target)
 
-    # private/ is reconciled with a THREE-WAY merge so a delete/rename on another machine is
-    # reflected here WITHOUT nuking a file this machine created but has not pushed yet — the exact
-    # failure a plain down-mirror would cause (pull before push -> local-only file wiped). The base
-    # is the cache's contents as they stand right now: that is what the remote looked like at the
-    # previous pull. Then:
-    #   * sync remote -> cache      (cache becomes the CURRENT remote; stale entries dropped)
-    #   * copy cache -> working     (remote adds/edits land; never removes a local file)
-    #   * of the files that were in the base but are gone from the current remote (a genuine
-    #     upstream delete), remove the local copy — into ~/.claude/sync-trash, not destroyed.
-    # A local file absent from both base and remote is brand-new here, so it matches neither rule
-    # and simply stays. A fresh remote with no private/ (r is None) leaves the working tree alone.
-    cpriv = cache_dir(project, "private")
-    base_files = rel_files(cpriv)
-    r = rclone_sync(f"{base}/private", cpriv, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
-    if r is not None and r.returncode == 0:
-        if dest_repo.is_dir():
-            local_priv = dest_repo / "private"
-            print(f">> private/ -> {local_priv} (3-way merge)")
-            trash = Path.home() / ".claude" / "sync-trash" / project / trash_stamp()
-            rclone_copy(cpriv, local_priv, excludes=EXCLUDE_INCOMING, backup_dir=trash)
-            deleted_upstream = base_files - rel_files(cpriv)
-            for rel in sorted(deleted_upstream):
-                victim = local_priv / rel
-                if victim.is_file():
-                    dest = trash / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(victim), str(dest))
-                    print(f"   upstream-deleted -> trash: {rel}")
-        else:
-            print(f"!! {dest_repo} missing — skipped private/", file=sys.stderr)
+    # private/ is no longer pulled here — it lives in its own git repo (~/claude-private,
+    # symlinked into each project as private/). Use `git -C ~/claude-private pull` for it.
+    # sessions/ and .ua/ stay on rclone.
 
     cua = cache_dir(project, "ua")
     rclone_copy(f"{base}/ua", cua, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
@@ -528,7 +456,7 @@ def main():
     ap.add_argument("--project-name", default=os.environ.get("PROJECT_NAME"))
     ap.add_argument("--remote", default=os.environ.get("SYNC_REMOTE", DEFAULT_REMOTE))
     ap.add_argument("--new-repo-path", default=None,
-                    help="pull only: where private/ should land on this machine")
+                    help="pull only: where .ua/ should land on this machine")
     ap.add_argument("--detach", action="store_true",
                     help="run in the background and return immediately (for hooks)")
     ap.add_argument("--force", action="store_true",
