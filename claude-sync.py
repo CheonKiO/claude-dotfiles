@@ -14,12 +14,19 @@ Slug canonicalization
   Claude Code derives a project's slug from the *resolved* working directory, so the same
   project on two machines (/home/kio/omok vs /Users/me/Development/omok) gets two slugs and
   the remote used to accumulate them side by side under projects/<slug>/ — they never
-  converged and `resume` on each machine only saw its own. Now every machine reads and
-  writes ONE remote dir, <base>/sessions/, in which the repo-root path is stored as the
-  token __CLAUDE_PROJECT_ROOT__ (machine-neutral, same idiom as the repo's __PY__ hook
-  token). push tokenizes local -> token and unions into the remote; pull detokenizes
-  token -> this machine's repo root and merges into the local slug. Tokenized both sides
-  means identical checksums across machines, so nothing re-uploads on every sync.
+  converged and `resume` on each machine only saw its own. Every machine now reads and
+  writes ONE remote dir, <base>/sessions/, and transcripts travel byte-for-byte: whatever
+  paths a machine recorded stay in its own transcripts.
+
+  Transcripts used to be stored with the repo root swapped for a __CLAUDE_PROJECT_ROOT__
+  token and swapped back on pull. That substitution is not injective — the token string
+  itself shows up in the body of any session that read this file, and a plain text replace
+  cannot tell a path from a mention of one. Such a line came back from the remote rewritten,
+  diverged from the local copy, and conflicted on every single pull thereafter. Copying bytes
+  verbatim makes the round trip an identity, which is what actually keeps checksums equal
+  across machines. The cost is that a transcript pulled from the other machine still carries
+  that machine's absolute paths — true of every path outside the repo root even back when
+  tokenizing was in place. These are logs, not scripts, so they are read, not executed.
 
   claude-sync.py push    --repo PATH [--remote gdrive:claude-sync]
   claude-sync.py pull    --repo PATH [--remote ...] [--new-repo-path PATH]
@@ -49,7 +56,6 @@ from claude_sync_merge import merge_tree, summary  # noqa: E402
 
 DEFAULT_REMOTE = "gdrive:claude-sync"
 CWD_PROBE_LINES = 40
-CWD_TOKEN = "__CLAUDE_PROJECT_ROOT__"
 STATE_DIR = Path.home() / ".claude" / "sync-state"
 CACHE_DIR = Path.home() / ".claude" / "sync-cache"
 # Merge-conflict copies are local review artifacts (see claude_sync_merge.set_aside). They
@@ -175,19 +181,6 @@ def sessions_remote(base):
     return f"{base}/sessions"
 
 
-def rewrite_paths(root: Path, frm: str, to: str):
-    """Rewrite frm -> to inside every *.jsonl / *.json under root, in place. Used to swap
-    the repo-root path for the machine-neutral token (push) and back (pull)."""
-    for f in root.rglob("*"):
-        if f.is_file() and f.suffix in (".jsonl", ".json"):
-            try:
-                txt = f.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            if frm in txt:
-                f.write_text(txt.replace(frm, to), encoding="utf-8")
-
-
 _TS_RE = re.compile(rb'"timestamp":"([^"]+)"')
 
 
@@ -215,7 +208,7 @@ def content_mtime(path, tail=65536):
 
 def stamp_sessions(root):
     """Set each transcript's mtime to its newest internal timestamp so the resume list shows
-    real session time, not the sync time that rewrite_paths' rewrite would otherwise stamp.
+    real session time, not the sync time a copy would otherwise stamp.
     Content-derived, so it self-heals files an earlier sync already clobbered. Returns count."""
     n = 0
     for f in Path(root).rglob("*.jsonl"):
@@ -257,14 +250,13 @@ def cmd_push(args, claude_dir, repo_root, project):
     errors = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        # Consolidate every local slug for this project into one staging dir, then swap this
-        # machine's repo-root path for the neutral token. Snapshotting into a temp dir also
-        # makes the upload source immutable while a live session keeps appending.
+        # Consolidate every local slug for this project into one staging dir. Snapshotting
+        # into a temp dir makes the upload source immutable while a live session keeps
+        # appending; the bytes themselves go up unchanged.
         local = tmp / "local"
         local.mkdir()
         for s in slugs:
             merge_tree(s, local)
-        rewrite_paths(local, repo_root, CWD_TOKEN)
 
         # Union with whatever the remote already holds so a push never drops another
         # machine's sessions or memory lines, then upload the union. The remote mirror is the
@@ -335,20 +327,15 @@ def cmd_pull(args, claude_dir, repo_root, project):
 
     print(f">> pull {sess} -> {target.name}")
     dest_repo = Path(args.new_repo_path or repo_root)
-    # Persistent caches make each rclone download incremental. Sessions are stored tokenized
-    # (like the remote), so detokenize a throwaway copy rather than the cache itself — mutating
-    # the cache would break checksum parity and re-download everything next time. .ua/ carries
-    # no token, so it merges straight from cache. .incoming-* conflict copies are
-    # excluded so the remote's stale ones never re-enter a slug that was already cleaned.
+    # Persistent caches make each rclone download incremental, and the cache doubles as the
+    # merge source: nothing rewrites it, so its checksums stay equal to the remote's and only
+    # files another machine changed come down. .incoming-* conflict copies are excluded so the
+    # remote's stale ones never re-enter a slug that was already cleaned.
     csess = cache_dir(project, "sessions")
     r = rclone_copy(sess, csess, allow_missing_src=True, excludes=EXCLUDE_INCOMING)
     if r is not None and r.returncode != 0:
         sys.exit(f"!! rclone copy failed: {(r.stderr or '').strip()[-300:]}")
-    with tempfile.TemporaryDirectory() as tmp:
-        stage = Path(tmp) / "sessions"
-        shutil.copytree(csess, stage)
-        rewrite_paths(stage, CWD_TOKEN, repo_root)
-        merge_tree(stage, target)
+    merge_tree(csess, target)
     stamp_sessions(target)
 
     # private/ is no longer pulled here — it lives in its own git repo (~/claude-private,
@@ -372,8 +359,7 @@ def cmd_pull(args, claude_dir, repo_root, project):
 
 def cmd_migrate(args, claude_dir, repo_root, project):
     """One-time: fold the old per-machine projects/<slug>/ dirs into the canonical
-    sessions/ dir, tokenizing each slug's literal repo path. Leaves the old dirs in place;
-    delete them by hand once the result is verified."""
+    sessions/ dir. Leaves the old dirs in place; delete them by hand once verified."""
     base = remote_base(args.remote, project)
     sess = sessions_remote(base)
     old = f"{base}/projects"
@@ -394,8 +380,6 @@ def cmd_migrate(args, claude_dir, repo_root, project):
             dl = tmp / d
             dl.mkdir()
             rclone_copy(f"{old}/{d}", dl)
-            for cwd in slug_cwds(dl):                         # each old slug carries a literal cwd
-                rewrite_paths(dl, cwd, CWD_TOKEN)
             merge_tree(dl, union)
             print(f"   folded {d}")
         up = rclone_copy(union, sess)
