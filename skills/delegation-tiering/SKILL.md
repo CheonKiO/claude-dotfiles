@@ -22,6 +22,16 @@ Delegate to a subagent (Agent tool) when a task is independent/parallelizable, e
 
 **Account check** — read `claudeAiOauth.subscriptionType` from `~/.claude/.credentials.json` (never print its token fields, only this plan label). `team`, `max`, or `enterprise` uses the table above as-is (full headroom). `pro`, `free`, or anything else/unrecognized shifts every tier down one (haiku/sonnet/opus), no review exception — less headroom, so default to the cheaper tier. Note: this field is cached at login and can lag a real plan change until the next re-login (anthropics/claude-code#43639) — if a tier change doesn't seem to be taking effect, ask the user whether they've re-logged in since upgrading.
 
+**Research / web-search pipeline** — for search-heavy work the bottleneck is coverage + source trust + cross-checking, not model reasoning, so don't pick one tier for the whole job — split by stage:
+
+| Stage | Work | Model |
+|---|---|---|
+| Fan-out search | parallel WebSearch queries, fetch sources | `sonnet` (many, cheap/wide — search barely needs intelligence) |
+| Source verification | adversarially check each claim/source ("is this actually true? trustworthy?") | **`fable`** (this *is* the verify tier) |
+| Synthesis | reconcile contradictions, structure the cited report | `opus` |
+
+Spend the budget saved on cheap fan-out (never run fan-out on `opus`) on the verify + synthesis stages. A **one-off WebSearch** (single fact, "what is X") is not a pipeline — do it inline at the current model, no subagent.
+
 Run independent delegations in parallel (multiple Agent calls in one message) rather than sequentially.
 
 **After a subagent finishes**, check whether gitignored files (`.env`, etc.) changed. `git diff` never shows this — check explicitly.
