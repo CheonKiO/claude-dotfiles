@@ -9,6 +9,8 @@ else that differs is set aside as .incoming-<stamp> for a human to reconcile.
 """
 import collections
 import datetime
+import hashlib
+import json
 import shutil
 from pathlib import Path
 
@@ -32,17 +34,52 @@ def _identical(a: Path, b: Path):
                 return True
 
 
-def _starts_with(bigger: Path, smaller: Path):
-    """True if bigger's leading bytes are exactly smaller — i.e. bigger is smaller plus
-    appended content."""
-    left = smaller.stat().st_size
-    with bigger.open("rb") as fb, smaller.open("rb") as fs:
-        while left > 0:
-            n = min(CHUNK, left)
-            if fb.read(n) != fs.read(n):
-                return False
-            left -= n
-    return True
+def _line_key(line: bytes):
+    """Machine-independent identity for a transcript line. uuid-bearing lines (the actual
+    conversation events — user/assistant/attachment/system) key by uuid, so the same event
+    dedups across machines even though its embedded absolute paths differ (/home vs /Users).
+    Lines without a uuid (mode, last-prompt, file-history snapshots, ...) key by their bytes —
+    identical state lines dedup; the worst case for a path-bearing one is a harmless duplicate,
+    never a loss."""
+    try:
+        u = json.loads(line).get("uuid")
+    except Exception:
+        u = None
+    if u:
+        return "u:" + str(u)
+    return "h:" + hashlib.sha1(line).hexdigest()
+
+
+def merge_jsonl_union(src: Path, dst: Path):
+    """Union two copies of an append-only transcript by line identity (see _line_key). dst keeps
+    all of its own lines in order; any src line whose identity dst lacks is appended in src order.
+    Nothing is dropped, and byte-level path differences no longer masquerade as divergence — the
+    failure mode of the old byte-prefix check. Returns the number of lines added."""
+    seen = set()
+    tmp = dst.with_name(dst.name + ".merging")
+    added = 0
+    last_nl = True
+    with dst.open("rb") as fd, tmp.open("wb") as fo:
+        for line in fd:
+            fo.write(line)
+            last_nl = line.endswith(b"\n")
+            if line.strip():
+                seen.add(_line_key(line))
+        with src.open("rb") as fs:
+            for line in fs:
+                if not line.strip():
+                    continue
+                k = _line_key(line)
+                if k not in seen:
+                    if not last_nl:
+                        fo.write(b"\n")
+                        last_nl = True
+                    fo.write(line)
+                    last_nl = line.endswith(b"\n")
+                    seen.add(k)
+                    added += 1
+    tmp.replace(dst)
+    return added
 
 
 def set_aside(src: Path, dst: Path, why: str):
@@ -81,16 +118,21 @@ def merge_file(src: Path, dst: Path):
     if dst.name == "MEMORY.md":
         merge_memory_index(src, dst)
         return
-    s, d = src.stat().st_size, dst.stat().st_size
-    if src.suffix == ".jsonl" and s > d and _starts_with(src, dst):
-        shutil.copy2(src, dst)
-        stats["extended"] += 1
-        print(f"   ^ {dst.name}  (+{(s - d) // 1024}KB)")
+    # Transcripts (.jsonl) merge by line identity, not byte prefix: two copies of the same
+    # session carry the same per-line uuids even when their embedded absolute paths differ
+    # across machines (/home vs /Users, tokenized repo root vs not). The old byte-prefix check
+    # read those path bytes as divergence and set the newer copy aside, silently dropping it.
+    if src.suffix == ".jsonl":
+        added = merge_jsonl_union(src, dst)
+        if added:
+            stats["extended"] += 1
+            print(f"   ~ {dst.name}  (+{added} lines)")
+        else:
+            stats["same"] += 1
         return
-    if src.suffix == ".jsonl" and d >= s and _starts_with(dst, src):
-        stats["local-newer"] += 1
-        return
-    set_aside(src, dst, "diverged" if src.suffix == ".jsonl" else "differs")
+    # Non-transcript files (agent meta.json, images, tool-result txt) are opaque — keep local
+    # and set the differing incoming copy aside for a human, as before.
+    set_aside(src, dst, "differs")
 
 
 def merge_tree(src: Path, dst: Path):
