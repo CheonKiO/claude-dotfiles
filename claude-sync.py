@@ -277,12 +277,26 @@ def cmd_push(args, claude_dir, repo_root, project):
         # merge_tree sets a diverged file aside as .incoming inside the cache. They are excluded
         # from the upload, but in this persistent cache they would otherwise pile up every push
         # (the cross-platform path residue makes a few files diverge on every run), so drop them.
+        #
+        # Most divergence is harmless residue (a token-rewritten byte differs so the prefix check
+        # fails, but the remote already holds as much or more). The dangerous case is when the
+        # local file is LARGER than the remote copy yet still diverged: its newer tail did NOT
+        # upload, and reporting "push complete" would be a lie. Flag only that case — failing on
+        # every routine-residue divergence would cry wolf on every push.
+        stale = []
+        for inc in sorted(remote.rglob("*.incoming-*")):
+            kept = inc.with_name(inc.name.split(".incoming-")[0])
+            if kept.exists() and inc.stat().st_size > kept.stat().st_size:
+                stale.append(kept.name)
         for junk in remote.rglob("*.incoming-*"):
             junk.unlink()
         up = rclone_copy(remote, sess, excludes=EXCLUDE_INCOMING)
         if up is not None and up.returncode != 0:
             tail = (up.stderr or "").strip().splitlines()
             errors.append(f"sessions: {tail[-1] if tail else 'rclone failed'}")
+        if stale:
+            errors.append("local newer but NOT uploaded (diverged, prefix check failed): "
+                          + ", ".join(sorted(set(stale))))
 
         # private/ is no longer synced here — it moved to its own git repo (~/claude-private,
         # a GitHub private repo, symlinked into each project as private/). rclone's mirror-sync
@@ -303,7 +317,8 @@ def cmd_push(args, claude_dir, repo_root, project):
     if errors:
         write_state(project, push={"state": "failed", "at": now_iso(),
                                    "error": "; ".join(errors)[:400]})
-        sys.exit(f"!! {len(errors)} transfer(s) failed — data is NOT on the remote")
+        sys.exit(f"!! push INCOMPLETE — {len(errors)} issue(s), data is NOT fully on the remote:\n"
+                 + "\n".join(f"   - {e}" for e in errors))
 
     newest = remote_newest(base)
     write_state(project, push={"state": "ok", "at": now_iso()},
