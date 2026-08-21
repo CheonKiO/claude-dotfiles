@@ -15,17 +15,18 @@
 | 행동 지침 | `CLAUDE.md` | 세션 시작 시 항상 로드되는 개인 규칙. 매턴 적용되는 것만 인라인, 특수 상황용은 아래 `rules/`·스킬로 분리 |
 | 상황별 규칙 | `rules/` | 특수 상황에서만 읽는 참조 문서 — `knowledge-propagation`(문서 배치·완료 기록), `doc-review`(긴 문서 리뷰), `git-hygiene`(머지·리베이스·브랜치 정리). CLAUDE.md 상단 포인터 표로 트리거 |
 | 스킬 | `skills/` | `delegation-tiering`, `full-review`, `live-contract-check`, `project-sync-setup`, `wip-then-squash`, `worktree-cleanup` |
-| 훅 | `hooks/` | 아래 3종 (파일) + `hooks.settings.json`(등록 정보) |
+| 훅 | `hooks/` | 아래 5종 (파일) + `hooks.settings.json`(등록 정보) |
 | 권한 허용목록 | `permissions.settings.json` | 매번 물어보지 않아도 되는 안전한 명령 allowlist (읽기 전용 도구·gradle 등) |
 | 일반 설정 | `general.settings.json` | 머신마다 달라지면 안 되는 정책 키를 **강제 덮어쓰기**. 현재 `cleanupPeriodDays: 36500` — 기본값 30일이 startup 스윕에서 세션 기록 ~73M을 복구 불가로 삭제한 사고(2026-08-16) 이후 고정 |
 | 상태줄 | `statusline.py` | 프롬프트 하단 상태줄. context %·비용·rate limit + **프로젝트 세션 sync 신호**(`올리는중`/`실패`/`새 기록`) 표시 |
 | 플러그인 | `install-plugins.py` + `plugins.manifest.json` | 쓰는 플러그인 + 마켓플레이스 목록, 새 머신에서 재설치 |
 | 프로젝트 세션 sync | `claude-sync.py` + `claude_sync_merge.py` | 한 프로젝트의 대화 기록·메모리를 rclone으로 클라우드 원격에 미러. 아래 [프로젝트 세션 동기화](#프로젝트-세션-동기화-rclone) 참고 |
+| 세션 sync allowlist | `sync-projects.json` | 전역 세션 sync 훅이 **어느 프로젝트를 켤지** 정하는 목록. 새 프로젝트 = 폴더명 한 줄 추가 |
 | 세션 이관 (레거시) | `claude-export.py` / `claude-import.py` | 한 프로젝트를 `.tar.gz` 한 덩이로 묶어 옮기는 일회성 이관. 일상 sync는 위 `claude-sync.py`가 대체 |
 
-### 글로벌 훅 3종 (`hooks/`)
+### 글로벌 훅 5종 (`hooks/`)
 
-모든 프로젝트에 걸리는 훅. (프로젝트별 세션 sync 훅은 별도 — [프로젝트 세션 동기화](#프로젝트-세션-동기화-rclone) 참고.)
+모든 프로젝트에 걸리는 훅. (세션 sync 훅도 이제 프로젝트별이 아니라 전역 하나 — [프로젝트 세션 동기화](#프로젝트-세션-동기화-rclone) 참고.)
 
 - **`file-size-guard.py`** — 파일이 500줄을 넘으면 경고 (god 파일 방지)
 - **`git-fetch-guard.py`** — `origin/`을 참조하는 명령 전에 자동으로 `git fetch` (stale 참조 방지)
@@ -33,6 +34,8 @@
   - macOS → `osascript` 알림 / WSL·Windows → PowerShell WinRT 토스트(`-EncodedCommand`라 한글 안전) / Linux → `notify-send` / 그 외 → 터미널 벨
   - 제목에 **작업 폴더명 + git 브랜치**를 넣어 세션을 구분함 (예: `Claude Code · S15P11A107 (feature-branch)`)
   - 별도 설치 불필요(각 OS 기본 도구 사용)
+- **`session-end-sync.py`** — 진짜 작업 종료(SessionEnd) 때, allowlist(`sync-projects.json`)에 든 프로젝트면 그 상태를 rclone 원격에 push(`--detach`). 프로젝트 루트는 cwd 조상 중 allowlist에 있는 폴더로 판정. [프로젝트 세션 동기화](#프로젝트-세션-동기화-rclone) 참고.
+- **`pdf-to-text.py`** — Read가 `*.pdf`를 열면 `pdftotext`로 텍스트층을 뽑아 캐시된 `.txt`로 우회(값싼 텍스트 읽기). 스캔본(텍스트층 없음)은 그대로 통과시켜 비전 Read가 처리.
 
 ---
 
@@ -51,13 +54,14 @@
 - **아카이브 없음 → 100MB 상한 없음, 타 머신 복사본 pruning 없음.** 67M transcript도 무문제.
 - **업로드 전 temp로 스냅샷** — 라이브 transcript가 계속 append돼서 rclone 해시 재검증 시 "md5 differ" 나던 것 방지. 소스가 전송 중 안 변함.
 
-### 훅: SessionEnd 하나만 (SessionStart 제거)
+### 훅: 전역 SessionEnd 하나 (allowlist 기반, SessionStart 제거)
 
-`project-sync-setup` 스킬의 `setup.py`가 프로젝트 `.claude/`에 SessionEnd 훅 하나만 깖:
+세션 sync는 **전역 훅 하나**(`hooks/session-end-sync.py`, 전역 `settings.json`에 등록)가 모든 프로젝트를 담당함. 예전엔 프로젝트마다 훅을 복사·하드코딩했지만(2026-08-18 변경), 지금은 **어느 프로젝트를 켤지 `sync-projects.json` allowlist 한 줄**로 정함:
 
-- **트리거**: `prompt_input_exit|logout|other` (진짜 작업 종료 신호만), cwd가 repo 하위일 때만.
-- **동작**: `claude-sync.py push --detach` — 분리 실행 0.04s 복귀, 결과는 `~/.claude/sync-state/<project>.json`에 기록. 세션 닫기가 업로드에 안 붙잡히고, 실패해도 나중에 보임.
-- **throttle 파일**: 멀티탭 동시 close 버스트를 10초로 합쳐 push 한 번만.
+- **트리거**: `prompt_input_exit|logout|other` (진짜 작업 종료 신호만).
+- **프로젝트 판정**: cwd 조상 중 basename이 allowlist에 있는 첫 폴더 = sync 루트·이름. git top-level이 아니라 allowlist로 유도 — `omok`처럼 여러 독립 repo(omok-back·omok-front)를 담는 컨테이너를 한 단위로 다루려는 의도. 매칭 없으면 no-op.
+- **동작**: `claude-sync.py push --detach` — 분리 실행 즉시 복귀, 결과는 `~/.claude/sync-state/<project>.json`에 기록. 세션 닫기가 업로드에 안 붙잡히고, 실패해도 나중에 보임.
+- **throttle**: 프로젝트명 기준 10초 — 멀티탭 동시 close 버스트를 push 한 번으로.
 - **SessionStart nudge 훅은 삭제됨** — `startup`에만 발화라 resume 땐 못 봤고, 발화하면 새 세션 첫 턴을 잡아먹었음. 이제 그 신호는 **상태줄**이 상시 운반(`올리는중`/`실패`/`새 기록`), 어떤 세션도 방해 안 함. 상태줄은 캐시 파일만 읽고(네트워크 X) 10분 지나면 백그라운드로 원격 재확인.
 
 ### pull은 항상 수동 (merge 기반)
@@ -100,7 +104,7 @@ python3 ~/.claude/claude-sync.py migrate --repo /path/to/project   # projects/<s
   - macOS `brew install rclone` / Linux `sudo apt install rclone` 또는 `curl https://rclone.org/install.sh | sudo bash` / Windows `winget install Rclone.Rclone`
 - **원격 설정** — `rclone config`로 Google Drive 등 remote 하나 잡기(기본 이름 `gdrive:claude-sync`).
 - **repo서 Claude 한 번 실행** — 로컬 slug 폴더 생성용(첫 pull 전제).
-- 프로젝트에 훅 설치: `python3 skills/project-sync-setup/setup.py --repo /path/to/project [--remote gdrive:claude-sync]`
+- 프로젝트 켜기: `sync-projects.json`에 프로젝트 폴더명 한 줄 추가 → `python3 sync.py` (전역 훅이 담당, 프로젝트별 설치 없음)
 
 ---
 
