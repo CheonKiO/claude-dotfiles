@@ -116,11 +116,37 @@ python3 ~/.claude/claude-sync.py migrate --repo /path/to/project   # projects/<s
 - `settings.local.json` — 프로젝트별 개인 오버라이드
 - `.credentials.json` — 로그인 토큰
 - `plugins/cache/` — 플러그인 캐시
-- `private/` — 개인 스테이징(gitignore)
+- `private/` — 개인 스테이징(gitignore). 대신 별도 repo `claude-private`로 수동 관리 — 아래 [개인 문서](#개인-문서-claude-private-별도-repo) 참고
 
 `settings.json`은 통째로 덮어쓰지 않고, `sync.py`가 **훅·권한·상태줄 등록 병합 + `general.settings.json`의 정책 키 강제 덮어쓰기**만 합니다. 나머지 키(`enabledPlugins`, 개인 권한 등)는 그 머신 것 그대로 둡니다.
 
 > `general.settings.json`의 `cleanupPeriodDays`만 예외적으로 **fill-if-absent가 아니라 덮어쓰기**입니다 — 잘못된 값(기본 30일)에 앉아 있는 머신을 교정해야 하기 때문. 30일 기본값이 startup 스윕에서 세션 기록 ~73M을 복구 불가로 지운 사고(2026-08-16)를 막으려는 것.
+
+---
+
+## 개인 문서 (claude-private, 별도 repo)
+
+면접 준비·자소서·포트폴리오 자료 같은 프로젝트별 `private/` 문서는 이 repo가 아니라
+비공개 repo [`claude-private`](https://github.com/CheonKiO/claude-private)로 따로 관리합니다
+(`claude-dotfiles`는 공개 repo라 여기 안 담음). 구조는 프로젝트 폴더명과 같은 하위폴더 하나씩
+(`claude-private/CheonKiO`, `claude-private/S15P11A107`, ...), 각 프로젝트의 `private/`를 그
+하위폴더로 연결(symlink/junction)해서 씁니다.
+
+**새 머신에서:**
+```bash
+git clone https://github.com/CheonKiO/claude-private.git ~/claude-private
+```
+프로젝트마다 `private/`를 gitignore(`.git/info/exclude`에 `private/` 한 줄)에 넣은 뒤 연결:
+```bash
+# macOS/Linux
+ln -s ~/claude-private/<project> /path/to/<project>/private
+
+# Windows (관리자 권한 불필요 — 심볼릭 링크 대신 정션)
+mklink /J "C:\path\to\<project>\private" "C:\Users\<user>\claude-private\<project>"
+```
+연결 후 반드시 `git status`로 프로젝트 repo에 `private/`가 안 잡히는지 확인할 것 — 공개 repo면 특히 중요.
+
+편집 후 동기화는 수동(`claude-private` README 참고): `git add -A && git commit && git push` / `git pull`.
 
 ---
 
@@ -132,6 +158,8 @@ cd claude-dotfiles
 python3 sync.py            # 설정을 ~/.claude 에 설치
 python3 install-plugins.py # (선택) 플러그인까지 재설치
 ```
+
+개인 문서(`private/`)가 필요하면 위 [개인 문서](#개인-문서-claude-private-별도-repo) 절차도 함께.
 
 `sync.py`는 **몇 번을 돌려도 안전(멱등)**합니다 — 파일을 그대로 복사하고, 훅/권한 등록을 중복 없이 병합하며, `settings.json`의 다른 키는 건드리지 않습니다. `git pull` 후 다시 돌리면 변경분만 반영됩니다.
 
