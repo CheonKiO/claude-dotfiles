@@ -8,6 +8,7 @@ enabledPlugins, etc. stay whatever they already are on this machine).
 """
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent
@@ -21,9 +22,24 @@ MANAGED_SCRIPTS = ("file-size-guard.py", "git-fetch-guard.py", "notify.sh",
 
 
 def detect_python():
-    """Interpreter invocation that exists on this OS: python3 -> python -> py -3."""
+    """Interpreter invocation that actually runs on this OS: python3 -> python -> py -3.
+
+    shutil.which() alone isn't enough on Windows: when no real python3 is installed,
+    the "python3"/"python" App Execution Alias stub still resolves via which() (it's
+    a real file), but running it just prints a Store-redirect message and exits
+    without executing the given code. So each candidate is exec-tested, not just
+    located.
+    """
     for cand in (["python3"], ["python"], ["py", "-3"]):
-        if shutil.which(cand[0]):
+        if not shutil.which(cand[0]):
+            continue
+        try:
+            result = subprocess.run(
+                cand + ["-c", "print(1)"], capture_output=True, text=True, timeout=5
+            )
+        except Exception:
+            continue
+        if result.returncode == 0 and result.stdout.strip() == "1":
             return " ".join(cand)
     return "python3"
 
