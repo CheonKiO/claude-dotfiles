@@ -126,8 +126,9 @@ python3 ~/.claude/claude-sync.py migrate --repo /path/to/project   # projects/<s
 
 ## 개인 문서 (claude-private, 별도 repo)
 
-면접 준비·자소서·포트폴리오 자료 같은 프로젝트별 `private/` 문서는 이 repo가 아니라
-비공개 repo [`claude-private`](https://github.com/CheonKiO/claude-private)로 따로 관리합니다
+프로젝트별 `private/`는 개인적으로 확인할 문서를 두는 개인 스테이징 공간입니다.
+이 repo가 아니라 비공개 repo
+[`claude-private`](https://github.com/CheonKiO/claude-private)로 따로 관리합니다
 (`claude-dotfiles`는 공개 repo라 여기 안 담음). 구조는 프로젝트 폴더명과 같은 하위폴더 하나씩
 (`claude-private/CheonKiO`, `claude-private/S15P11A107`, ...), 각 프로젝트의 `private/`를 그
 하위폴더로 연결(symlink/junction)해서 씁니다.
