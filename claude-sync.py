@@ -44,6 +44,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Windows' console codepage (e.g. cp949 on Korean locale) can't encode the em-dashes
+# and such this script prints; without this, any non-ASCII print() crashes the run
+# after the real work (push/pull) already succeeded.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from claude_sync_merge import merge_tree, summary  # noqa: E402
 
@@ -59,7 +66,10 @@ EXCLUDE_INCOMING = ["*.incoming-*"]
 
 
 def run(args, **kw):
-    return subprocess.run(args, capture_output=True, text=True, **kw)
+    # rclone emits UTF-8 (filenames, stats) regardless of OS; on Korean Windows the
+    # default locale codec is cp949, so text=True alone crashes the reader thread on
+    # any non-ASCII path. Force utf-8 and never crash on a stray byte.
+    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", **kw)
 
 
 def state_path(project):
