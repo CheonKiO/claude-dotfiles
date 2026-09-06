@@ -187,15 +187,23 @@ def sessions_remote(base):
 
 def rewrite_paths(root: Path, frm: str, to: str):
     """Rewrite frm -> to inside every *.jsonl / *.json under root, in place. Used to swap
-    the repo-root path for the machine-neutral token (push) and back (pull)."""
+    the repo-root path for the machine-neutral token (push) and back (pull).
+
+    frm/to are escaped as they'd literally appear inside a JSON string before the
+    substring swap. A raw Windows path has single backslashes, but the on-disk JSON
+    text stores them doubled — substituting the raw path in as `to` (pull/detokenize)
+    plants bare backslashes and breaks JSON, and searching for it as `frm` (push/
+    tokenize) never matches at all, silently skipping tokenization."""
+    frm_esc = json.dumps(frm)[1:-1]
+    to_esc = json.dumps(to)[1:-1]
     for f in root.rglob("*"):
         if f.is_file() and f.suffix in (".jsonl", ".json"):
             try:
                 txt = f.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            if frm in txt:
-                f.write_text(txt.replace(frm, to), encoding="utf-8")
+            if frm_esc in txt:
+                f.write_text(txt.replace(frm_esc, to_esc), encoding="utf-8")
 
 
 _TS_RE = re.compile(rb'"timestamp":"([^"]+)"')
