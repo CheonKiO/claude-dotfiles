@@ -5,7 +5,7 @@ description: Use before writing code against an external API/vendor's documented
 
 # Live Contract Check
 
-외부 API를 문서만 보고 구현했다가 실제 응답과 달라서 터진 사고를 막기 위한 스킬. 이음길 프로젝트에서 ODsay `trafficType` 값이 문서와 실제가 뒤집혀 있던 것, TourAPI 페이지네이션이 예상과 다르게 부분수집되던 것 등 — 전부 "문서를 믿었다"에서 나왔다. AI는 특히 문서를 그대로 믿는 경향이 있어서, 이 절차를 명시적으로 강제할 필요가 있다.
+외부 API를 문서만 보고 구현하거나, 설계 단계에서 문서의 의미를 잘못 옮겨 발생하는 사고를 막기 위한 스킬. 이음길 프로젝트에서는 초기 설계가 ODsay `trafficType`의 의미를 반대로 매핑했고, 검증 스크립트도 시외버스를 다른 API로 보내고 있었다. 실제 호출 결과를 문서 및 호출 기록과 대조한 뒤 두 오류를 각각 바로잡았다. AI는 문서를 피상적으로 읽거나 구현 가정을 사실처럼 굳힐 수 있으므로, 이 절차를 명시적으로 강제할 필요가 있다.
 
 ## 언제 쓰나
 
@@ -32,7 +32,7 @@ description: Use before writing code against an external API/vendor's documented
 ```
 | 필드 | 문서상 타입/의미 | 실제 관측값 | 일치? |
 |---|---|---|---|
-| trafficType | enum, 문서 순서 그대로 | 실제로는 순서가 다름 | ❌ |
+| trafficType | enum, 교통수단별 코드 | 응답값과 초기 매핑을 대조 | 설계 오류 발견 |
 ```
 
 특히 다음을 의심해서 본다:
@@ -47,7 +47,7 @@ description: Use before writing code against an external API/vendor's documented
 발견한 불일치는 주석으로 "왜 이렇게 처리하는지" 근거를 남긴다 — 나중에 누가 "왜 이상하게 짜여있지"하고 되돌리지 않도록.
 
 ```
-// 실측: trafficType 7 = 항공 (문서 순서와 다름, 2026-08-04 curl 634회로 확인)
+// 실측과 문서 대조 결과에 따라 초기 trafficType 매핑을 수정함
 ```
 
 ### 5. 구현 전 게이트로 쓸 것
@@ -56,5 +56,7 @@ description: Use before writing code against an external API/vendor's documented
 
 ## 실패 사례 (교훈)
 
-- "문서를 믿었다"에서 나온 사고: enum 순서 뒤집힘, 페이지네이션 부분수집, 가격 필드 타입 불일치.
+- 문서의 의미를 초기 설계에 반대로 옮긴 사고: ODsay `trafficType` 매핑 오류. 실호출 비교 후 문서 기준에 맞게 수정했다.
+- 검증 코드 자체의 오류: 시외버스를 다른 API로 보내던 스크립트 문제. 호출 기록을 확인해 수정한 뒤 다시 측정했다.
+- 문서와 실제 응답의 차이에서 생길 수 있는 일반적 사고: 페이지네이션 부분수집, null·누락 필드, 가격 필드 타입 불일치.
 - 계획서에 실측 게이트를 명시했으면서도 실제로는 안 지키고 앞서나간 사례 — 게이트는 문서화가 아니라 강제되는 순서여야 한다.
