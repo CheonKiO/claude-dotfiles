@@ -14,6 +14,7 @@ The rules below apply every turn. These apply only in specific situations — re
 | Design finalized · feature wraps · writing commit/MR body | `~/.claude/rules/knowledge-propagation.md` |
 | Asked to review/read a long existing document | `~/.claude/rules/doc-review.md` |
 | Around merges, rebases, branch/worktree cleanup | `~/.claude/rules/git-hygiene.md` |
+| Implementation wraps — before declaring done | `~/.claude/rules/code-comprehension.md` |
 
 ## 1. Think Before Coding
 
